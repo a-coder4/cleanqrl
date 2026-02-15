@@ -183,14 +183,17 @@ We want to grow as a community, so posting [Github Issues](https://github.com/fh
 
 ## Citing CleanQRL
 
-If you use **CleanQRL** in your work, please cite our [paper](https://fhg-iisb.github.io/cleanqrl-docs/algorithms/overview/):
+If you use **CleanQRL** in your work, please cite our [paper](https://arxiv.org/pdf/2507.07593):
 
 ```bibtex
-@article{kruse2025cleanqrl,
-  title={CleanQRL: Lightweight Single-file Implementations of Quantum Reinforcement Learning Algorithms},
+@inproceedings{kruse2025cleanqrl,
+  title={Cleanqrl: Lightweight single-file implementations of quantum reinforcement learning algorithms},
   author={Kruse, Georg and Coelho, Rodrigo and Rosskopf, Andreas and Wille, Robert and Lorenz, Jeanette Miriam},
-  journal={arXiv preprint arXiv:2507.07593},
-  year={2025}
+  booktitle={2025 IEEE International Conference on Quantum Computing and Engineering (QCE)},
+  volume={1},
+  pages={1640--1645},
+  year={2025},
+  organization={IEEE}
 }
 ```
 
