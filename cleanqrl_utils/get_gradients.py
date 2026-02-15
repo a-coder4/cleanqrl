@@ -9,6 +9,32 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from collections import deque, namedtuple
+
+
+Batch = namedtuple('Batch', ['observations', 'next_observations', 'actions', 'rewards', 'dones'])
+
+class ReplayBuffer:
+    def __init__(self, buffer_size, observation_space, action_space, device, handle_timeout_termination=False):
+        self.buffer_size = buffer_size
+        self.observation_space = observation_space
+        self.action_space = action_space
+        self.device = device
+        self.handle_timeout_termination = handle_timeout_termination
+        self.buffer = deque(maxlen=buffer_size)
+
+    def add(self, obs, next_obs, actions, rewards, dones, infos):
+        for i in range(len(obs)):
+            self.buffer.append((obs[i], next_obs[i], actions[i], rewards[i], dones[i]))
+
+    def sample(self, batch_size):
+        indices = np.random.choice(len(self.buffer), batch_size, replace=False)
+        observations = torch.tensor([self.buffer[i][0] for i in indices], dtype=torch.float32).to(self.device)
+        next_observations = torch.tensor([self.buffer[i][1] for i in indices], dtype=torch.float32).to(self.device)
+        actions = torch.tensor([self.buffer[i][2] for i in indices], dtype=torch.long).unsqueeze(1).to(self.device)
+        rewards = torch.tensor([self.buffer[i][3] for i in indices], dtype=torch.float32).to(self.device)
+        dones = torch.tensor([self.buffer[i][4] for i in indices], dtype=torch.float32).to(self.device)
+        return Batch(observations, next_observations, actions, rewards, dones)
 
 
 def make_env(env_id):
@@ -84,24 +110,9 @@ def get_gradients(config):
     ), "only discrete action space is supported"
 
     for iteration in range(num_iterations):
-        q_network = QRLAgentDQN(envs, config).to(device)
-        optimizer = optim.Adam(
-            [
-                {
-                    "params": q_network._parameters["input_scaling_actor"],
-                    "lr": lr_input_scaling,
-                },
-                {
-                    "params": q_network._parameters["output_scaling_actor"],
-                    "lr": lr_output_scaling,
-                },
-                {
-                    "params": q_network._parameters["variational_actor"],
-                    "lr": lr_variational,
-                },
-            ]
-        )
-        target_network = QRLAgentDQN(envs, config).to(device)
+        q_network = QNetwork(envs).to(device)
+        optimizer = optim.Adam(q_network.parameters(), lr=learning_rate)
+        target_network = QNetwork(envs).to(device)
         target_network.load_state_dict(q_network.state_dict())
 
         rb = ReplayBuffer(
@@ -168,10 +179,9 @@ def get_gradients(config):
                     grads = {}
                     for name, param in q_network.named_parameters():
                         if param.grad is not None:
-                            grads[name] = param.grad.detach().numpy().flatten()
+                            grads[name] = param.grad.detach().cpu().numpy().flatten()
 
                     ray.train.report(metrics={"gradients": grads})
-                    break
 
                     optimizer.step()
 

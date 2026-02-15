@@ -30,6 +30,7 @@ from cleanqrl.ppo_quantum import ppo_quantum
 from cleanqrl.ppo_quantum_continuous_action import ppo_quantum_continuous_action
 from cleanqrl.ppo_quantum_discrete_state import ppo_quantum_discrete_state
 from cleanqrl.ppo_quantum_jumanji import ppo_quantum_jumanji
+from cleanqrl.ppo_quantum_hybrid import ppo_quantum_hybrid
 
 # REINFORCE classical
 from cleanqrl.reinforce_classical import reinforce_classical
@@ -50,7 +51,7 @@ from cleanqrl.reinforce_quantum_discrete_state import reinforce_quantum_discrete
 from cleanqrl.reinforce_quantum_jumanji import reinforce_quantum_jumanji
 
 from tutorials.graph_encoding import reinforce_quantum_jumanji as reinforce_quantum_jumanji_graph_encoding
-from tutorials.hamiltonian_encoding import reinforce_quantum_jumanji as reinforce_quantum_jumanji_hamiltonian_encoding
+from tutorials.hamiltonian_encoding_reinforce import reinforce_quantum_jumanji as reinforce_quantum_jumanji_hamiltonian_encoding
 from tutorials.noise_models import reinforce_quantum_discrete_state as reinforce_quantum_discrete_state_noise_model
 from tutorials.custom_maze import reinforce_quantum_discrete_state as reinforce_quantum_discrete_state_custom_maze
 agent_switch = {
@@ -62,6 +63,7 @@ agent_switch = {
     "ppo_quantum_continuous_action": ppo_quantum_continuous_action,
     "ppo_quantum_discrete_state": ppo_quantum_discrete_state,
     "ppo_quantum_jumanji": ppo_quantum_jumanji,
+    "ppo_quantum_hybrid": ppo_quantum_hybrid,
     "dqn_classical": dqn_classical,
     "dqn_classical_discrete_state": dqn_classical_discrete_state,
     "dqn_classical_jumanji": dqn_classical_jumanji,

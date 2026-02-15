@@ -44,4 +44,5 @@ diff_method:        adjoint
 
 
 cuda: False
+save_model: True
 

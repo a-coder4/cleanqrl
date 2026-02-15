@@ -55,7 +55,7 @@ def extract_hyperparameters(conf):
                         interval = [str(param) for param in conf[key][2]]
                     elif conf[key][1] == "list(int)":
                         interval = [
-                            "_".join(int(p) for p in param) for param in conf[key][2]
+                            "_".join([str(int(p)) for p in param]) for param in conf[key][2]
                         ]
                     elif conf[key][1] == "list(float)":
                         interval = [

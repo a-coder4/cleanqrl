@@ -16,6 +16,7 @@ import torch.nn as nn
 import torch.optim as optim
 import wandb
 import yaml
+from typing import Optional
 from ray.train._internal.session import get_session
 from torch.distributions.categorical import Categorical
 
@@ -116,9 +117,10 @@ def log_metrics(config, metrics, report_path=None):
     if ray.is_initialized():
         ray.train.report(metrics=metrics)
     else:
-        with open(os.path.join(report_path, "result.json"), "a") as f:
-            json.dump(metrics, f)
-            f.write("\n")
+        if report_path is not None:
+            with open(os.path.join(str(report_path), "result.json"), "a") as f:
+                json.dump(metrics, f)
+                f.write("\n")
 
 
 # MAIN TRAINING FUNCTION
@@ -142,8 +144,12 @@ def reinforce_quantum(config):
             f.write("")
     else:
         session = get_session()
-        report_path = session.storage.trial_fs_path
-        name = session.storage.trial_fs_path.split("/")[-1]
+        if session is not None and hasattr(session, "storage") and session.storage is not None:
+            report_path = session.storage.trial_fs_path
+            name = session.storage.trial_fs_path.split("/")[-1]
+        else:
+            report_path = config["path"]
+            name = config["trial_name"]
 
     if config["wandb"]:
         wandb.init(
@@ -157,7 +163,7 @@ def reinforce_quantum(config):
         )
 
     if config["seed"] is None:
-        seed = np.random.randint(0, 1e9)
+        seed = np.random.randint(0, 1_000_000_000)
     else:
         seed = config["seed"]
 
@@ -168,9 +174,10 @@ def reinforce_quantum(config):
     device = torch.device(
         "cuda" if (torch.cuda.is_available() and config["cuda"]) else "cpu"
     )
-    assert (
-        env_id in gym.envs.registry.keys()
-    ), f"{env_id} is not a valid gymnasium environment"
+    try:
+        gym.spec(env_id)
+    except gym.error.Error:
+        raise AssertionError(f"{env_id} is not a valid gymnasium environment")
 
     envs = gym.vector.SyncVectorEnv(
         [make_env(env_id, config) for _ in range(num_envs)],
@@ -308,8 +315,7 @@ if __name__ == "__main__":
         env_id: str = "CartPole-v1"  # Environment ID
 
         # Algorithm parameters
-        num_envs: int = 1  # Number of environments
-        seed: int = None  # Seed for reproducibility
+        seed: Optional[int] = None  # Seed for reproducibility
         total_timesteps: int = 100000  # Total number of timesteps
         gamma: float = 0.99  # discount factor
         lr_input_scaling: float = 0.01  # Learning rate for input scaling

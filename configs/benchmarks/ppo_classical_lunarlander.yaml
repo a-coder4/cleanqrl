@@ -1,0 +1,36 @@
+trial_path:             logs
+trial_name:             ppo_lunarlander_stable_B
+wandb:                  True
+project_name:           cleanqrl
+
+ray_local_mode:         False
+num_cpus:               1
+num_gpus:               0
+num_samples:            1
+cpus_per_worker:        1
+gpus_per_worker:        0
+
+env_id:                 LunarLander-v3
+
+agent:                  PPO_classical
+total_timesteps:        2000000
+
+learning_rate:          0.0003
+num_envs:               8
+seed:                   42
+num_steps:              1024
+anneal_lr:              False
+gamma:                  0.99
+gae_lambda:             0.95
+num_minibatches:        32
+update_epochs:          10
+norm_adv:               True
+clip_coef:              0.2
+clip_vloss:             True
+ent_coef:               0.001
+vf_coef:                0.5
+max_grad_norm:          0.5
+target_kl:              0.012
+
+cuda:                   False
+save_model:             True

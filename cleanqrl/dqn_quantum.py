@@ -19,6 +19,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import wandb
 import yaml
+from typing import Optional
 from ray.train._internal.session import get_session
 from replay_buffer import ReplayBuffer, ReplayBufferWrapper
 
@@ -122,9 +123,12 @@ def log_metrics(config, metrics, report_path=None):
     if ray.is_initialized():
         ray.train.report(metrics=metrics)
     else:
-        with open(os.path.join(report_path, "result.json"), "a") as f:
-            json.dump(metrics, f)
-            f.write("\n")
+        if report_path is not None:
+            with open(os.path.join(str(report_path), "result.json"), "a") as f:
+                json.dump(metrics, f)
+                f.write("\n")
+        else:
+            raise ValueError("report_path is None, cannot write result.json")
 
 
 # MAIN TRAINING FUNCTION
@@ -158,6 +162,8 @@ def dqn_quantum(config: dict):
             f.write("")
     else:
         session = get_session()
+        if session is None or not hasattr(session, "storage") or session.storage is None:
+            raise RuntimeError("Ray session or its storage is not properly initialized.")
         report_path = session.storage.trial_fs_path
         name = session.storage.trial_fs_path.split("/")[-1]
 
@@ -173,7 +179,7 @@ def dqn_quantum(config: dict):
         )
     # TRY NOT TO MODIFY: seeding
     if config["seed"] is None:
-        seed = np.random.randint(0, 1e9)
+        seed = np.random.randint(0, int(1e9))
     else:
         seed = config["seed"]
 
@@ -182,9 +188,10 @@ def dqn_quantum(config: dict):
     torch.manual_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() and cuda else "cpu")
 
-    assert (
-        env_id in gym.envs.registry.keys()
-    ), f"{env_id} is not a valid gymnasium environment"
+    try:
+        gym.spec(env_id)
+    except gym.error.Error:
+        raise AssertionError(f"{env_id} is not a valid gymnasium environment")
 
     # env setup
     envs = gym.vector.SyncVectorEnv([make_env(env_id, config) for i in range(num_envs)])
@@ -273,7 +280,7 @@ def dqn_quantum(config: dict):
         for idx, trunc in enumerate(truncations):
             if trunc:
                 real_next_obs[idx] = infos["final_observation"][idx]
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+        rb.add(obs, real_next_obs, actions, rewards, terminations, [infos])
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
@@ -341,8 +348,7 @@ if __name__ == "__main__":
         env_id: str = "CartPole-v1"  # Environment ID
 
         # Algorithm parameters
-        num_envs: int = 1  # Number of environments
-        seed: int = None  # Seed for reproducibility
+        seed: 'Optional[int]' = None  # Seed for reproducibility
         buffer_size: int = 10000  # Size of the replay buffer
         total_timesteps: int = 10000  # Total number of timesteps
         start_e: float = 1.0  # Starting value of epsilon for exploration
@@ -364,21 +370,37 @@ if __name__ == "__main__":
         diff_method: str = "adjoint"  # Differentiation method
         save_model: bool = True  # Save the model after the run
 
-    config = vars(Config())
-
-    # Based on the current time, create a unique name for the experiment
-    config["trial_name"] = (
-        datetime.now().strftime("%Y-%m-%d--%H-%M-%S") + "_" + config["trial_name"]
-    )
-    config["path"] = os.path.join(
-        Path(__file__).parent.parent, config["trial_path"], config["trial_name"]
-    )
-
-    # Create the directory and save a copy of the config file so that the experiment can be replicated
-    os.makedirs(os.path.dirname(config["path"] + "/"), exist_ok=True)
-    config_path = os.path.join(config["path"], "config.yml")
-    with open(config_path, "w") as file:
-        yaml.dump(config, file)
+    # Try to load config from YAML file if it exists
+    yaml_config_path = os.path.join(Path(__file__).parent.parent, "configs", "benchmarks", "dqn_quantum_cartpole.yaml")
+    if os.path.exists(yaml_config_path):
+        with open(yaml_config_path, "r") as f:
+            config = yaml.safe_load(f)
+        # Based on the current time, create a unique name for the experiment
+        config["trial_name"] = (
+            datetime.now().strftime("%Y-%m-%d--%H-%M-%S") + "_" + config["trial_name"]
+        )
+        config["path"] = os.path.join(
+            Path(__file__).parent.parent, config["trial_path"], config["trial_name"]
+        )
+        os.makedirs(os.path.dirname(config["path"] + "/"), exist_ok=True)
+        config_path = os.path.join(config["path"], "config.yml")
+        with open(config_path, "w") as file:
+            yaml.dump(config, file)
+        print(f"Loaded config from {yaml_config_path}")
+    else:
+        config = vars(Config())
+        # Based on the current time, create a unique name for the experiment
+        config["trial_name"] = (
+            datetime.now().strftime("%Y-%m-%d--%H-%M-%S") + "_" + config["trial_name"]
+        )
+        config["path"] = os.path.join(
+            Path(__file__).parent.parent, config["trial_path"], config["trial_name"]
+        )
+        os.makedirs(os.path.dirname(config["path"] + "/"), exist_ok=True)
+        config_path = os.path.join(config["path"], "config.yml")
+        with open(config_path, "w") as file:
+            yaml.dump(config, file)
+        print("Loaded default config (dataclass)")
 
     # Start the agent training
     dqn_quantum(config)

@@ -5,6 +5,7 @@ import random
 import time
 from collections import deque
 from dataclasses import dataclass
+from typing import Optional
 from datetime import datetime
 from pathlib import Path
 
@@ -157,7 +158,9 @@ def log_metrics(config, metrics, report_path=None):
     if ray.is_initialized():
         ray.train.report(metrics=metrics)
     else:
-        with open(os.path.join(report_path, "result.json"), "a") as f:
+        if report_path is None:
+            raise ValueError("report_path must not be None when logging metrics.")
+        with open(os.path.join(str(report_path), "result.json"), "a") as f:
             json.dump(metrics, f)
             f.write("\n")
 
@@ -204,8 +207,11 @@ def ppo_quantum(config):
             f.write("")
     else:
         session = get_session()
-        report_path = session.storage.trial_fs_path
-        name = session.storage.trial_fs_path.split("/")[-1]
+        if session is not None and hasattr(session, "storage") and session.storage is not None:
+            report_path = session.storage.trial_fs_path
+            name = session.storage.trial_fs_path.split("/")[-1]
+        else:
+            raise AttributeError("Session is None or session storage is None or not available.")
 
     if config["wandb"]:
         wandb.init(
@@ -220,7 +226,7 @@ def ppo_quantum(config):
 
     # TRY NOT TO MODIFY: seeding
     if config["seed"] is None:
-        seed = np.random.randint(0, 1e9)
+        seed = np.random.randint(0, int(1e9))
     else:
         seed = config["seed"]
 
@@ -229,9 +235,10 @@ def ppo_quantum(config):
     torch.manual_seed(seed)
 
     device = torch.device("cuda" if (torch.cuda.is_available() and cuda) else "cpu")
-    assert (
-        env_id in gym.envs.registry.keys()
-    ), f"{env_id} is not a valid gymnasium environment"
+    try:
+        gym.spec(env_id)
+    except Exception:
+        raise AssertionError(f"{env_id} is not a valid gymnasium environment")
 
     envs = gym.vector.SyncVectorEnv(
         [make_env(env_id, config) for i in range(num_envs)],
@@ -263,10 +270,15 @@ def ppo_quantum(config):
         ]
     )
 
-    obs = torch.zeros((num_steps, num_envs) + envs.single_observation_space.shape).to(
+    obs_shape = envs.single_observation_space.shape
+    if obs_shape is None:
+        raise ValueError("envs.single_observation_space.shape is None. Please check your environment.")
+    obs = torch.zeros((num_steps, num_envs) + obs_shape).to(
         device
     )
-    actions = torch.zeros((num_steps, num_envs) + envs.single_action_space.shape).to(
+    # For discrete action spaces, use shape (1,)
+    action_shape = envs.single_action_space.shape if envs.single_action_space.shape is not None else (1,)
+    actions = torch.zeros((num_steps, num_envs) + action_shape).to(
         device
     )
     logprobs = torch.zeros((num_steps, num_envs)).to(device)
@@ -361,9 +373,11 @@ def ppo_quantum(config):
             returns = advantages + values
 
         # flatten the batch
-        b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
+        obs_shape = envs.single_observation_space.shape if envs.single_observation_space.shape is not None else (1,)
+        b_obs = obs.reshape((-1,) + obs_shape)
         b_logprobs = logprobs.reshape(-1)
-        b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
+        action_shape = envs.single_action_space.shape if envs.single_action_space.shape is not None else (1,)
+        b_actions = actions.reshape((-1,) + action_shape)
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
@@ -479,8 +493,7 @@ if __name__ == "__main__":
 
         # Algorithm parameters
         total_timesteps: int = 1000000  # Total timesteps for the experiment
-        num_envs: int = 1  # Number of parallel environments
-        seed: int = None  # Seed for reproducibility
+        seed: Optional[int] = None  # Seed for reproducibility
         num_steps: int = 2048  # Steps per environment per policy rollout
         anneal_lr: bool = True  # Toggle for learning rate annealing
         lr_input_scaling: float = 0.01  # Learning rate for input scaling
@@ -496,7 +509,7 @@ if __name__ == "__main__":
         ent_coef: float = 0.0  # Entropy coefficient
         vf_coef: float = 0.5  # Value function coefficient
         max_grad_norm: float = 0.5  # Maximum gradient norm for clipping
-        target_kl: float = None  # Target KL divergence threshold
+        target_kl: Optional[float] = None  # Target KL divergence threshold
         cuda: bool = False  # Whether to use CUDA
         num_qubits: int = 4  # Number of qubits
         num_layers: int = 2  # Number of layers in the quantum circuit
@@ -504,20 +517,36 @@ if __name__ == "__main__":
         diff_method: str = "adjoint"  # Differentiation method
         save_model: bool = True  # Save the model after the run
 
-    config = vars(Config())
-
-    # Based on the current time, create a unique name for the experiment
-    config["trial_name"] = (
-        datetime.now().strftime("%Y-%m-%d--%H-%M-%S") + "_" + config["trial_name"]
-    )
-    config["path"] = os.path.join(
-        Path(__file__).parent.parent, config["trial_path"], config["trial_name"]
-    )
-
-    # Create the directory and save a copy of the config file so that the experiment can be replicated
-    os.makedirs(os.path.dirname(config["path"] + "/"), exist_ok=True)
-    config_path = os.path.join(config["path"], "config.yml")
-    with open(config_path, "w") as file:
-        yaml.dump(config, file)
+    # Try to load config from YAML file if it exists
+    yaml_config_path = os.path.join(Path(__file__).parent.parent, "configs", "benchmarks", "ppo_quantum_cartpole.yaml")
+    if os.path.exists(yaml_config_path):
+        with open(yaml_config_path, "r") as f:
+            config = yaml.safe_load(f)
+        # Based on the current time, create a unique name for the experiment
+        config["trial_name"] = (
+            datetime.now().strftime("%Y-%m-%d--%H-%M-%S") + "_" + config["trial_name"]
+        )
+        config["path"] = os.path.join(
+            Path(__file__).parent.parent, config["trial_path"], config["trial_name"]
+        )
+        os.makedirs(os.path.dirname(config["path"] + "/"), exist_ok=True)
+        config_path = os.path.join(config["path"], "config.yml")
+        with open(config_path, "w") as file:
+            yaml.dump(config, file)
+        print(f"Loaded config from {yaml_config_path}")
+    else:
+        config = vars(Config())
+        # Based on the current time, create a unique name for the experiment
+        config["trial_name"] = (
+            datetime.now().strftime("%Y-%m-%d--%H-%M-%S") + "_" + config["trial_name"]
+        )
+        config["path"] = os.path.join(
+            Path(__file__).parent.parent, config["trial_path"], config["trial_name"]
+        )
+        os.makedirs(os.path.dirname(config["path"] + "/"), exist_ok=True)
+        config_path = os.path.join(config["path"], "config.yml")
+        with open(config_path, "w") as file:
+            yaml.dump(config, file)
+        print("Loaded default config (dataclass)")
 
     ppo_quantum(config)

@@ -55,7 +55,9 @@ def log_metrics(config, metrics, report_path=None):
     if ray.is_initialized():
         ray.train.report(metrics=metrics)
     else:
-        with open(os.path.join(report_path, "result.json"), "a") as f:
+        if report_path is None:
+            raise ValueError("report_path is None, cannot save results.")
+        with open(os.path.join(str(report_path), "result.json"), "a") as f:
             json.dump(metrics, f)
             f.write("\n")
 
@@ -78,8 +80,11 @@ def reinforce_classical(config):
             f.write("")
     else:
         session = get_session()
-        report_path = session.storage.trial_fs_path
-        name = session.storage.trial_fs_path.split("/")[-1]
+        if session is not None and hasattr(session, "storage") and session.storage is not None:
+            report_path = session.storage.trial_fs_path
+            name = session.storage.trial_fs_path.split("/")[-1]
+        else:
+            raise AttributeError("session or session.storage is None, cannot determine report_path or name.")
 
     if config["wandb"]:
         wandb.init(
@@ -93,7 +98,7 @@ def reinforce_classical(config):
         )
 
     if config["seed"] is None:
-        seed = np.random.randint(0, 1e9)
+        seed = np.random.randint(0, int(1e9))
     else:
         seed = config["seed"]
 
@@ -104,9 +109,10 @@ def reinforce_classical(config):
     device = torch.device(
         "cuda" if (torch.cuda.is_available() and config["cuda"]) else "cpu"
     )
-    assert (
-        env_id in gym.envs.registry.keys()
-    ), f"{env_id} is not a valid gymnasium environment"
+    try:
+        gym.spec(env_id)
+    except gym.error.Error:
+        raise AssertionError(f"{env_id} is not a valid gymnasium environment")
 
     envs = gym.vector.SyncVectorEnv(
         [make_env(env_id, config) for _ in range(num_envs)],
@@ -116,7 +122,8 @@ def reinforce_classical(config):
         envs.single_action_space, gym.spaces.Discrete
     ), "only discrete action space is supported"
 
-    observation_size = np.prod(envs.single_observation_space.shape)
+    shape = envs.single_observation_space.shape
+    observation_size = int(np.prod(shape)) if shape is not None else 1
     num_actions = envs.single_action_space.n
 
     # Here, the classical agent is initialized with a Neural Network
@@ -226,28 +233,44 @@ if __name__ == "__main__":
 
         # Algorithm parameters
         num_envs: int = 2  # Number of environments
-        seed: int = None  # Seed for reproducibility
+        seed: int | None = None  # Seed for reproducibility
         total_timesteps: int = 100000  # Total number of timesteps
         gamma: float = 0.99  # discount factor
         lr: float = 0.01  # Learning rate for network weights
         cuda: bool = False  # Whether to use CUDA
         save_model: bool = True  # Save the model after the run
 
-    config = vars(Config())
-
-    # Based on the current time, create a unique name for the experiment
-    config["trial_name"] = (
-        datetime.now().strftime("%Y-%m-%d--%H-%M-%S") + "_" + config["trial_name"]
-    )
-    config["path"] = os.path.join(
-        Path(__file__).parent.parent, config["trial_path"], config["trial_name"]
-    )
-
-    # Create the directory and save a copy of the config file so that the experiment can be replicated
-    os.makedirs(os.path.dirname(config["path"] + "/"), exist_ok=True)
-    config_path = os.path.join(config["path"], "config.yml")
-    with open(config_path, "w") as file:
-        yaml.dump(config, file)
+    # Try to load config from YAML file if it exists
+    yaml_config_path = os.path.join(Path(__file__).parent.parent, "configs", "benchmarks", "reinforce_classical_cartpole.yaml")
+    if os.path.exists(yaml_config_path):
+        with open(yaml_config_path, "r") as f:
+            config = yaml.safe_load(f)
+        # Based on the current time, create a unique name for the experiment
+        config["trial_name"] = (
+            datetime.now().strftime("%Y-%m-%d--%H-%M-%S") + "_" + config["trial_name"]
+        )
+        config["path"] = os.path.join(
+            Path(__file__).parent.parent, config["trial_path"], config["trial_name"]
+        )
+        os.makedirs(os.path.dirname(config["path"] + "/"), exist_ok=True)
+        config_path = os.path.join(config["path"], "config.yml")
+        with open(config_path, "w") as file:
+            yaml.dump(config, file)
+        print(f"Loaded config from {yaml_config_path}")
+    else:
+        config = vars(Config())
+        # Based on the current time, create a unique name for the experiment
+        config["trial_name"] = (
+            datetime.now().strftime("%Y-%m-%d--%H-%M-%S") + "_" + config["trial_name"]
+        )
+        config["path"] = os.path.join(
+            Path(__file__).parent.parent, config["trial_path"], config["trial_name"]
+        )
+        os.makedirs(os.path.dirname(config["path"] + "/"), exist_ok=True)
+        config_path = os.path.join(config["path"], "config.yml")
+        with open(config_path, "w") as file:
+            yaml.dump(config, file)
+        print("Loaded default config (dataclass)")
 
     # Start the agent training
     reinforce_classical(config)

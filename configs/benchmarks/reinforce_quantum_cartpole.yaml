@@ -29,4 +29,4 @@ num_layers:         5
 device:             lightning.qubit
 diff_method:        adjoint
 cuda:               False
-save_model:         False
+save_model:         True

@@ -1,15 +1,18 @@
 # This file is an adaptation from https://docs.cleanrl.dev/rl-algorithms/ppo/#ppopy
+# Custom hybrid quantum-classical PPO agent with classical compression layers
 import json
 import os
 import random
 import time
 from collections import deque
 from dataclasses import dataclass
+from typing import Optional
 from datetime import datetime
 from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
+import pennylane as qml
 import ray
 import torch
 import torch.nn as nn
@@ -17,62 +20,114 @@ import torch.optim as optim
 import wandb
 import yaml
 from ray.train._internal.session import get_session
-from torch.distributions.normal import Normal
+from torch.distributions.categorical import Categorical
 
 
 # ENV LOGIC: create your env (with config) here:
 def make_env(env_id, config):
     def thunk():
-
         env = gym.make(env_id)
-        env = gym.wrappers.FlattenObservation(env)  # deal with dm_control's Dict observation space
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        env = gym.wrappers.ClipAction(env)
-        env = gym.wrappers.NormalizeObservation(env)
-        env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10), env.observation_space)
-        env = gym.wrappers.NormalizeReward(env, gamma=config["gamma"])
-        env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
         return env
 
     return thunk
 
 
-# ALGO LOGIC: initialize your agent here:
-class PPOAgentClassicalContinuous(nn.Module):
-    def __init__(self, observation_size, num_actions):
+# --- Quantum Circuit Definition ---
+n_qubits = 4
+n_layers = 2
+dev = qml.device("default.qubit", wires=n_qubits)
+
+@qml.qnode(dev, interface="torch", diff_method="backprop")
+def quantum_circuit(inputs, weights):
+    # inputs: shape (n_qubits,) - single sample
+    # weights: [n_layers, n_qubits, 3] (for StronglyEntangling)
+    
+    # 1. Data Encoding (Angle Embedding)
+    qml.AngleEmbedding(inputs, wires=range(n_qubits), rotation='X')
+
+    # 2. Variational Layers
+    qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
+
+    # 3. Measurement - return as tuple for proper batching
+    return tuple(qml.expval(qml.PauliZ(i)) for i in range(n_qubits))
+
+
+# --- The Torch Layer Wrapper ---
+class QuantumLayer(nn.Module):
+    def __init__(self, n_qubits, n_layers):
         super().__init__()
+        self.n_qubits = n_qubits
+        self.n_layers = n_layers
+        
+        # Initialize weights for the quantum circuit
+        self.weights = nn.Parameter(
+            torch.FloatTensor(n_layers, n_qubits, 3).uniform_(-np.pi, np.pi),
+            requires_grad=True
+        )
+        
+    def forward(self, x):
+        # x shape: (batch_size, n_qubits)
+        # Process each sample through the quantum circuit
+        batch_size = x.shape[0]
+        results = []
+        for i in range(batch_size):
+            out = quantum_circuit(x[i], self.weights)
+            # out is a tuple of n_qubits expectation values
+            results.append(torch.stack(out))
+        return torch.stack(results)  # (batch_size, n_qubits)
+
+
+# --- The Full Hybrid Agent ---
+class Agent(nn.Module):
+    def __init__(self, envs):
+        super().__init__()
+        # Input: 8 obs -> Hidden 64 -> Compressed 4
+        self.network = nn.Sequential(
+            nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64),
+            nn.Tanh(),
+            nn.Linear(64, 4),  # Compress to 4 features for the 4 qubits
+            nn.Tanh(),         # Bound outputs for angle encoding (approx -1 to 1)
+        )
+        
+        # Quantum Actor Head
+        self.actor_scale = nn.Parameter(torch.ones(1) * 1.0)  # Learnable scaling
+        self.quantum_layer = QuantumLayer(n_qubits=4, n_layers=2)
+        
+        # Classical Critic (Standard)
         self.critic = nn.Sequential(
-            nn.Linear(observation_size, 64),
-            nn.ReLU(),
+            nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64),
+            nn.Tanh(),
             nn.Linear(64, 64),
-            nn.ReLU(),
+            nn.Tanh(),
             nn.Linear(64, 1),
         )
-        self.actor_mean = nn.Sequential(
-            nn.Linear(observation_size, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, num_actions),
-        )
-        self.actor_logstd = nn.Parameter(torch.zeros(1, num_actions))
 
     def get_value(self, x):
         return self.critic(x)
 
     def get_action_and_value(self, x, action=None):
-        action_mean = self.actor_mean(x)
-        action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd)
-        probs = Normal(action_mean, action_std)
+        # 1. Critic
+        value = self.critic(x)
+        
+        # 2. Hybrid Actor
+        features = self.network(x) 
+        # Scale features by PI so Tanh output (-1, 1) covers full rotation (-pi, pi)
+        features_scaled = features * np.pi 
+        
+        # Run Quantum Circuit
+        # q_out shape: [batch, 4] (Expectation values -1 to 1)
+        q_out = self.quantum_layer(features_scaled)
+        
+        # Scale logits: PPO needs larger logits for confident Softmax
+        logits = q_out * (1.0 + self.actor_scale) 
+        
+        probs = Categorical(logits=logits)
+        
         if action is None:
             action = probs.sample()
-        return (
-            action,
-            probs.log_prob(action).sum(1),
-            probs.entropy().sum(1),
-            self.critic(x),
-        )
+            
+        return action, probs.log_prob(action), probs.entropy(), value
 
 
 def log_metrics(config, metrics, report_path=None):
@@ -81,27 +136,28 @@ def log_metrics(config, metrics, report_path=None):
     if ray.is_initialized():
         ray.train.report(metrics=metrics)
     else:
-        with open(os.path.join(report_path, "result.json"), "a") as f:
+        if report_path is None:
+            raise ValueError("report_path must not be None when logging metrics.")
+        with open(os.path.join(str(report_path), "result.json"), "a") as f:
             json.dump(metrics, f)
             f.write("\n")
 
 
 # MAIN TRAINING FUNCTION
-def ppo_classical_continuous_action(config):
+def ppo_quantum_hybrid(config):
     num_envs = config["num_envs"]
     num_steps = config["num_steps"]
     num_minibatches = config["num_minibatches"]
     total_timesteps = config["total_timesteps"]
     env_id = config["env_id"]
-    num_envs = config["num_envs"]
-    learning_rate = config["learning_rate"]
     anneal_lr = config["anneal_lr"]
+    learning_rate = config["learning_rate"]
     gamma = config["gamma"]
     gae_lambda = config["gae_lambda"]
     update_epochs = config["update_epochs"]
     clip_coef = config["clip_coef"]
-    norm_adv = config["norm_adv"]
-    clip_vloss = config["clip_vloss"]
+    norm_adv = config.get("norm_adv", True)
+    clip_vloss = config.get("clip_vloss", True)
     ent_coef = config["ent_coef"]
     vf_coef = config["vf_coef"]
     target_kl = config["target_kl"]
@@ -125,8 +181,11 @@ def ppo_classical_continuous_action(config):
             f.write("")
     else:
         session = get_session()
-        report_path = session.storage.trial_fs_path
-        name = session.storage.trial_fs_path.split("/")[-1]
+        if session is not None and hasattr(session, "storage") and session.storage is not None:
+            report_path = session.storage.trial_fs_path
+            name = session.storage.trial_fs_path.split("/")[-1]
+        else:
+            raise AttributeError("Session is None or session storage is None or not available.")
 
     if config["wandb"]:
         wandb.init(
@@ -141,7 +200,7 @@ def ppo_classical_continuous_action(config):
 
     # TRY NOT TO MODIFY: seeding
     if config["seed"] is None:
-        seed = np.random.randint(0, 1e9)
+        seed = np.random.randint(0, int(1e9))
     else:
         seed = config["seed"]
 
@@ -149,31 +208,29 @@ def ppo_classical_continuous_action(config):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() and cuda else "cpu")
-    assert (
-        env_id in gym.envs.registry.keys()
-    ), f"{env_id} is not a valid gymnasium environment"
+    device = torch.device("cuda" if (torch.cuda.is_available() and cuda) else "cpu")
+    try:
+        gym.spec(env_id)
+    except Exception:
+        raise AssertionError(f"{env_id} is not a valid gymnasium environment")
 
-    # env setup
-    envs = gym.vector.SyncVectorEnv([make_env(env_id, config) for i in range(num_envs)])
+    envs = gym.vector.SyncVectorEnv(
+        [make_env(env_id, config) for i in range(num_envs)],
+    )
     assert isinstance(
-        envs.single_action_space, gym.spaces.Box
-    ), "only continuous action space is supported"
+        envs.single_action_space, gym.spaces.Discrete
+    ), "only discrete action space is supported"
 
-    observation_size = np.array(envs.single_observation_space.shape).prod()
-    num_actions = np.prod(envs.single_action_space.shape)
+    # Initialize the hybrid agent
+    agent = Agent(envs).to(device)
+    optimizer = optim.Adam(agent.parameters(), lr=learning_rate)
 
-    # Here, the classical agent is initialized with a Neural Network
-    agent = PPOAgentClassicalContinuous(observation_size, num_actions).to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=learning_rate, eps=1e-5)
-
-    # ALGO Logic: Storage setup
-    obs = torch.zeros((num_steps, num_envs) + envs.single_observation_space.shape).to(
-        device
-    )
-    actions = torch.zeros((num_steps, num_envs) + envs.single_action_space.shape).to(
-        device
-    )
+    obs_shape = envs.single_observation_space.shape
+    if obs_shape is None:
+        raise ValueError("envs.single_observation_space.shape is None. Please check your environment.")
+    obs = torch.zeros((num_steps, num_envs) + obs_shape).to(device)
+    action_shape = envs.single_action_space.shape if envs.single_action_space.shape is not None else (1,)
+    actions = torch.zeros((num_steps, num_envs) + action_shape).to(device)
     logprobs = torch.zeros((num_steps, num_envs)).to(device)
     rewards = torch.zeros((num_steps, num_envs)).to(device)
     dones = torch.zeros((num_steps, num_envs)).to(device)
@@ -182,7 +239,7 @@ def ppo_classical_continuous_action(config):
     # global parameters to log
     global_step = 0
     global_episodes = 0
-    print_interval = 50
+    print_interval = 10
     episode_returns = deque(maxlen=print_interval)
 
     # TRY NOT TO MODIFY: start the game
@@ -220,6 +277,7 @@ def ppo_classical_continuous_action(config):
                 next_done
             ).to(device)
 
+            metrics = {}
             if "episode" in infos:
                 for idx, finished in enumerate(infos["_episode"]):
                     if finished:
@@ -258,9 +316,11 @@ def ppo_classical_continuous_action(config):
             returns = advantages + values
 
         # flatten the batch
-        b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
+        obs_shape = envs.single_observation_space.shape if envs.single_observation_space.shape is not None else (1,)
+        b_obs = obs.reshape((-1,) + obs_shape)
         b_logprobs = logprobs.reshape(-1)
-        b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
+        action_shape = envs.single_action_space.shape if envs.single_action_space.shape is not None else (1,)
+        b_actions = actions.reshape((-1,) + action_shape)
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
@@ -275,13 +335,12 @@ def ppo_classical_continuous_action(config):
                 mb_inds = b_inds[start:end]
 
                 _, newlogprob, entropy, newvalue = agent.get_action_and_value(
-                    b_obs[mb_inds], b_actions[mb_inds]
+                    b_obs[mb_inds], b_actions.long()[mb_inds]
                 )
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
                 with torch.no_grad():
-                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
                     old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
                     clipfracs += [
@@ -330,6 +389,7 @@ def ppo_classical_continuous_action(config):
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
+
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         metrics = {}
         metrics["learning_rate"] = optimizer.param_groups[0]["lr"]
@@ -343,7 +403,7 @@ def ppo_classical_continuous_action(config):
         metrics["SPS"] = int(global_step / (time.time() - start_time))
         log_metrics(config, metrics, report_path)
 
-    if config["save_model"]:
+    if config.get("save_model", True):
         model_path = f"{os.path.join(report_path, name)}.cleanqrl_model"
         torch.save(agent.state_dict(), model_path)
         print(f"model saved to {model_path}")
@@ -357,50 +417,41 @@ if __name__ == "__main__":
 
     @dataclass
     class Config:
-        # General parameters
-        trial_name: str = "ppo_classical_continuous_action"  # Name of the trial
-        trial_path: str = "logs"  # Path to save logs relative to the parent directory
-        wandb: bool = False  # Use wandb to log experiment data
-        project_name: str = "cleanqrl"  # If wandb is used, name of the wandb-project
-
-        # Environment parameters
-        env_id: str = "Pendulum-v1"  # Environment ID
-
-        # Algorithm parameters
-        total_timesteps: int = 1000000  # Total timesteps for the experiment
-        learning_rate: float = 3e-4  # Learning rate of the optimizer
-        num_envs: int = 1  # Number of parallel environments
-        seed: int = None  # Seed for reproducibility
-        num_steps: int = 2048  # Steps per environment per policy rollout
-        anneal_lr: bool = True  # Toggle for learning rate annealing
-        gamma: float = 0.9  # Discount factor gamma
-        gae_lambda: float = 0.95  # Lambda for general advantage estimation
-        num_minibatches: int = 32  # Number of mini-batches
-        update_epochs: int = 10  # Number of epochs to update the policy
-        norm_adv: bool = True  # Toggle for advantages normalization
-        clip_coef: float = 0.2  # Surrogate clipping coefficient
-        clip_vloss: bool = True  # Toggle for clipped value function loss
-        ent_coef: float = 0.0  # Entropy coefficient
-        vf_coef: float = 0.5  # Value function coefficient
-        max_grad_norm: float = 0.5  # Maximum gradient norm for clipping
-        target_kl: float = None  # Target KL divergence threshold
-        cuda: bool = False  # Whether to use CUDA
-        save_model: bool = True  # Save the model after the run
+        trial_name: str = "ppo_quantum_hybrid"
+        trial_path: str = "logs"
+        wandb: bool = False
+        project_name: str = "cleanqrl"
+        env_id: str = "LunarLander-v3"
+        total_timesteps: int = 1000000
+        seed: Optional[int] = None
+        num_envs: int = 4
+        num_steps: int = 1024
+        anneal_lr: bool = False
+        learning_rate: float = 0.0005
+        gamma: float = 0.99
+        gae_lambda: float = 0.95
+        num_minibatches: int = 16
+        update_epochs: int = 10
+        norm_adv: bool = True
+        clip_coef: float = 0.2
+        clip_vloss: bool = True
+        ent_coef: float = 0.01
+        vf_coef: float = 0.5
+        max_grad_norm: float = 0.5
+        target_kl: Optional[float] = 0.02
+        cuda: bool = False
+        save_model: bool = True
 
     config = vars(Config())
-
-    # Based on the current time, create a unique name for the experiment
     config["trial_name"] = (
         datetime.now().strftime("%Y-%m-%d--%H-%M-%S") + "_" + config["trial_name"]
     )
     config["path"] = os.path.join(
         Path(__file__).parent.parent, config["trial_path"], config["trial_name"]
     )
-
-    # Create the directory and save a copy of the config file so that the experiment can be replicated
     os.makedirs(os.path.dirname(config["path"] + "/"), exist_ok=True)
     config_path = os.path.join(config["path"], "config.yml")
     with open(config_path, "w") as file:
         yaml.dump(config, file)
 
-    ppo_classical_continuous_action(config)
+    ppo_quantum_hybrid(config)

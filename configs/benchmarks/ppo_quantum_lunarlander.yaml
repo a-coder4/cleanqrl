@@ -1,0 +1,31 @@
+agent:                  ppo_quantum_hybrid
+env_id:                 LunarLander-v3
+trial_name:             qppo_hybrid_configC
+
+# Config C: Final Polish
+num_envs:               4
+total_timesteps:        3000000     # 3M steps
+
+# PPO Hyperparams
+learning_rate:          0.0005
+anneal_lr:              True        # ENABLED: Decays LR to 0 to freeze winning policy
+num_steps:              1024
+num_minibatches:        32          # 32 batches = smoother gradient updates
+update_epochs:          10
+gamma:                  0.99
+gae_lambda:             0.95
+clip_coef:              0.2
+norm_adv:               True
+ent_coef:               0.001       # REDUCED: From 0.01 to stop random wobbling
+vf_coef:                0.5
+max_grad_norm:          0.5
+target_kl:              0.02
+
+# Hardware
+cuda:                   False       # Quantum Sim is usually CPU-bound
+
+# Logging
+wandb:                  False
+project_name:           cleanqrl
+seed:                   None
+save_model:             True
