@@ -4,7 +4,10 @@ from glob import glob
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import ray
+try:
+    import ray
+except ImportError:
+    ray = None
 import yaml
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -16,13 +19,26 @@ def plot_single_run(path):
 
     results = pd.read_json(results_path, lines=True)
 
-    results_selected_returns = results[pd.notna(results["episodic_return"])]
-    episode_returns = results_selected_returns["episodic_return"].values
+    # Handle different column names for returns
+    if "episodic_return" in results.columns:
+        return_col = "episodic_return"
+    elif "episode_reward" in results.columns:
+        return_col = "episode_reward"
+    else:
+        raise KeyError("No return column found (expected 'episodic_return' or 'episode_reward')")
+
+    results_selected_returns = results[pd.notna(results[return_col])]
+    episode_returns = results_selected_returns[return_col].values
     global_steps_rewards = results_selected_returns["global_step"].values
 
-    results_selected_loss = results[pd.notna(results["loss"])]
-    episode_losses = results_selected_loss["loss"].values
-    global_steps_loss = results_selected_loss["global_step"].values
+    # Handle loss column (may not exist in all runs)
+    if "loss" in results.columns:
+        results_selected_loss = results[pd.notna(results["loss"])]
+        episode_losses = results_selected_loss["loss"].values
+        global_steps_loss = results_selected_loss["global_step"].values
+    else:
+        episode_losses = None
+        global_steps_loss = None
 
     # Plot episode_return vs. global_step
     plt.figure(figsize=(10, 5))
@@ -34,14 +50,15 @@ def plot_single_run(path):
     plt.grid(True)
     plt.savefig(os.path.join(path, "training_results_reward.png"))
 
-    plt.figure(figsize=(10, 5))
-    plt.plot(global_steps_loss, episode_losses, label="Episode Loss")
-    plt.xlabel("Global Step")
-    plt.ylabel("Episode Loss")
-    plt.title("Episode Return vs. Global Step")
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(os.path.join(path, "training_results_loss.png"))
+    if episode_losses is not None:
+        plt.figure(figsize=(10, 5))
+        plt.plot(global_steps_loss, episode_losses, label="Episode Loss")
+        plt.xlabel("Global Step")
+        plt.ylabel("Episode Loss")
+        plt.title("Loss vs. Global Step")
+        plt.legend()
+        plt.grid(True)
+        plt.savefig(os.path.join(path, "training_results_loss.png"))
 
 
 def plot_tune_run(path):

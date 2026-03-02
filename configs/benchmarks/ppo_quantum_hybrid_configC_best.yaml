@@ -1,10 +1,10 @@
 agent:                  ppo_quantum_hybrid
 env_id:                 LunarLander-v3
-trial_name:             qppo_hybrid_configC
+trial_name:             qppo_hybrid_configC_best
 
-# Config C: Final Polish
+# Config C: Final Polish (from best run 06:56:04)
 num_envs:               4
-total_timesteps:        3000000     # 3M steps
+total_timesteps:        1500000     # 1.5M steps (enough to solve)
 
 # PPO Hyperparams
 learning_rate:          0.0005
@@ -27,5 +27,5 @@ cuda:                   False       # Quantum Sim is usually CPU-bound
 # Logging
 wandb:                  True
 project_name:           cleanqrl
-seed:                   2
+seed:                   2           # Same seed as best run
 save_model:             True

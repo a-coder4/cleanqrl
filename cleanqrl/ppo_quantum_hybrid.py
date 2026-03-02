@@ -392,6 +392,8 @@ def ppo_quantum_hybrid(config):
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         metrics = {}
+        metrics["global_step"] = global_step
+        metrics["loss"] = loss.item()
         metrics["learning_rate"] = optimizer.param_groups[0]["lr"]
         metrics["value_loss"] = v_loss.item()
         metrics["policy_loss"] = pg_loss.item()
