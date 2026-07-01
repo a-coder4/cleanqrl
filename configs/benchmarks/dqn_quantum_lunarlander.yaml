@@ -1,6 +1,6 @@
 # general parameters
 trial_path:             logs
-trial_name:             dqn_lunarlander_classical
+trial_name:             dqn_lunarlander_quantum
 wandb:                  True
 project_name:           cleanqrl
 
@@ -23,20 +23,28 @@ eval_episodes:          10
 success_reward_threshold: 200.0
 
 # algorithm parameters
-agent:                  DQN_classical
+agent:                  DQN_quantum
 total_timesteps:        2000000
-lr:                     0.0001
 num_envs:               1
 seed:                   0
 buffer_size:            50000
 gamma:                  0.99
 tau:                    1.0
-target_network_frequency:   1000
+target_network_frequency: 1000
 batch_size:             64
 start_e:                1
 end_e:                  0.01
 exploration_fraction:   0.1
 learning_starts:        10000
 train_frequency:        4
+
+lr_input_scaling:       0.0001
+lr_weights:             0.0001
+lr_output_scaling:      0.001
+num_qubits:             8
+num_layers:             5
+device:                 lightning.qubit
+diff_method:            adjoint
+
 cuda:                   False
 save_model:             True

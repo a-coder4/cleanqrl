@@ -13,6 +13,23 @@ This report evaluates the robustness and comparative performance of a **hybrid q
 
 ## 2. Experimental Setup
 
+### Standardized Fair-Comparison Protocol
+
+The current standardized LunarLander-v3 protocol is enforced in code by `cleanqrl/experiment.py` and can be launched with `run_lunarlander_fair.py`. All fair-comparison runs use:
+
+- Environment: `LunarLander-v3`
+- Observation preprocessing: none (`observation_preprocessing: none`)
+- Wrappers: `RecordEpisodeStatistics` for all agents; DQN additionally uses only the replay-buffer bookkeeping wrapper required for off-policy storage
+- Action handling: the native discrete action space with no action remapping
+- Training budget: exactly 2,000,000 environment interactions per seed
+- Seeds: `[0, 1, 2, 3, 4]` for every agent
+- Evaluation: deterministic greedy actions, exploration disabled, 10 evaluation episodes every 100,000 training interactions
+- Metrics: identical JSONL keys for `episode_reward`, `episode_length`, `success_rate`, `global_step`, and `training_timestep`
+- Checkpoints: every 100,000 training interactions, plus final model save
+- Success criterion: episode reward >= 200.0
+
+Historical results below were produced before this standardization and should be treated as exploratory rather than definitive fair-comparison results.
+
 ### 2.1 Algorithms and Architectures
 
 | Algorithm | Architecture | Trainable Parameters (approx.) |
@@ -128,9 +145,27 @@ The DQN baseline with 500K steps achieves a last-100 mean of **-150.6 +/- 105.6*
 - The hard target network update (`tau=1.0`) leads to instability
 - DQN's off-policy nature with a relatively small buffer (50K) and aggressive epsilon decay (10% of training) may cause forgetting
 
-## 5. Comparative Analysis
+## 5. Short-Trained QPPO Hardware Inference Feasibility
 
-### 5.1 Reward Curves
+After the classical LunarLander training runs, we performed a separate **inference-only** hardware feasibility check for the QRL pipeline. A short-trained 4-qubit QPPO actor circuit was trained locally in simulation, then evaluated on **five fixed LunarLander states** using both a local simulator and IBM Quantum hardware. The hardware execution used **100 shots** on **ibm_kingston**. This experiment did **not** train on IBM hardware and should not be interpreted as evidence of quantum advantage; it only tests whether the trained circuit can be exported and executed on real quantum hardware.
+
+The full source table is saved at `results/ibm_qppo_short_trained_inference_results.md`.
+
+| State | Simulator output | IBM hardware output | Selected action | Agreement | Backend | Shots | Job ID | Circuit time (s) |
+| ---: | --- | --- | --- | --- | --- | ---: | --- | ---: |
+| 0 | `[0.0621, -0.2189, 0.1308, 0.0593]` | `[0.0200, -0.2200, -0.0600, 0.3200]` | fire_main (2) | False | ibm_kingston | 100 | d92dgg357qjs73b7qcug | 1617.874 |
+| 1 | `[0.1574, -0.3605, 0.0533, -0.0813]` | `[0.3600, -0.1800, 0.2400, -0.1200]` | noop (0) | True | ibm_kingston | 100 | d92dgg357qjs73b7qcug | 1617.874 |
+| 2 | `[-0.0009, -0.1672, 0.2467, -0.0877]` | `[0.0800, -0.2400, 0.1600, 0.0000]` | fire_main (2) | True | ibm_kingston | 100 | d92dgg357qjs73b7qcug | 1617.874 |
+| 3 | `[0.1831, -0.3009, 0.0905, -0.0023]` | `[0.2400, -0.1800, 0.1600, 0.0400]` | noop (0) | True | ibm_kingston | 100 | d92dgg357qjs73b7qcug | 1617.874 |
+| 4 | `[0.2597, -0.3711, -0.0618, -0.0115]` | `[0.1400, -0.3200, -0.2000, 0.0400]` | noop (0) | True | ibm_kingston | 100 | d92dgg357qjs73b7qcug | 1617.874 |
+
+The simulator and hardware-selected actions agreed on **4 out of 5 states**, for an action agreement rate of **0.800**. This result shows that the QRL inference pipeline can transfer from local simulation to real IBM Quantum hardware: the same trained actor circuit can be constructed, submitted, measured, and mapped back to LunarLander actions. The mismatch on 1 of 5 states is expected in this low-shot hardware setting. Real devices introduce gate noise, readout noise, calibration drift, finite-shot sampling error, and transpilation-dependent circuit changes; with only 100 shots, small expectation-value differences can change the argmax action.
+
+Overall, this hardware run should be framed as **short-trained QPPO hardware inference feasibility**, not full quantum training and not quantum advantage. It complements the simulator-based training results by demonstrating end-to-end deployability of the actor circuit on real quantum hardware.
+
+## 6. Comparative Analysis
+
+### 6.1 Reward Curves
 
 ![QRL vs Classical](../logs/lunarlander_benchmark_plots/qrl_vs_classical_reward.png)
 *Figure 3: QRL PPO ConfigC (mean +/- std of 3 seeds) vs classical PPO and DQN baselines.*
@@ -138,7 +173,7 @@ The DQN baseline with 500K steps achieves a last-100 mean of **-150.6 +/- 105.6*
 ![Final Performance](../logs/lunarlander_benchmark_plots/final_performance_bar.png)
 *Figure 4: Final performance comparison (last 100 episodes, mean +/- std).*
 
-### 5.2 Summary Comparison Table
+### 6.2 Summary Comparison Table
 
 | Algorithm | Last-100 Mean | Last-100 Std | Solved? | First Step > 200 | Overall Max |
 |-----------|:------------:|:----------:|:-------:|:----------------:|:-----------:|
@@ -152,7 +187,7 @@ The DQN baseline with 500K steps achieves a last-100 mean of **-150.6 +/- 105.6*
 | Classical PPO Tiny | 116.0 | 118.6 | No | 479,380 | 277.7 |
 | Classical DQN | -150.6 | 105.6 | No | 172,189 | 204.0 |
 
-### 5.3 Key Comparisons
+### 6.3 Key Comparisons
 
 **QRL PPO vs Classical PPO (full-size):**
 - Classical PPO achieves higher and more stable final performance (254.2 vs 230.9 best seed)
@@ -170,14 +205,14 @@ The DQN baseline with 500K steps achieves a last-100 mean of **-150.6 +/- 105.6*
 - Even the worst QRL ConfigC seed (52.2) is far above DQN's final performance (-150.6)
 - DQN's on-policy instability with hard target updates makes it uncompetitive on this task with the given hyperparameters
 
-### 5.4 Loss Curves
+### 6.4 Loss Curves
 
 ![Loss Curves](../logs/lunarlander_benchmark_plots/loss_comparison.png)
 *Figure 5: Training loss curves. Left: Policy loss for PPO-based algorithms. Right: Value/TD loss.*
 
 The policy loss curves show that QRL PPO ConfigC seeds converge to a similar range as classical PPO, indicating that the PPO update rule functions normally with the quantum policy head. The value loss (right panel) shows the classical critic in QRL PPO converging similarly to the classical PPO's critic, as expected since both use identical critic architectures.
 
-## 6. Comparison to Published Baselines
+## 7. Comparison to Published Baselines
 
 Published benchmarks on LunarLander provide reference points:
 
@@ -191,9 +226,9 @@ Published benchmarks on LunarLander provide reference points:
 
 Our classical PPO baseline is competitive with published results, validating our experimental setup. The QRL PPO best seed (230.9) also exceeds the published PPO benchmark mean (220.7), though with fewer seeds and more training steps. Our classical DQN underperforms published DQN benchmarks, likely due to insufficient training steps (500K vs 750K) and suboptimal hyperparameters (hard target updates, aggressive epsilon decay).
 
-## 7. Discussion
+## 8. Discussion
 
-### 7.1 Key Findings
+### 8.1 Key Findings
 
 1. **QRL PPO can solve LunarLander-v3**, achieving returns above 200 with the right configuration (ConfigC) and favorable seed. The best individual run (seed=2, mean=230.9) approaches classical PPO performance.
 
@@ -209,7 +244,7 @@ Our classical PPO baseline is competitive with published results, validating our
 
 5. **Classical PPO remains the strongest overall.** With full-size networks, classical PPO achieves higher mean, lower variance, and more consistent across-seed behavior. The quantum advantage, if any, is in parameter efficiency rather than absolute performance.
 
-### 7.2 Limitations
+### 8.2 Limitations
 
 1. **Limited seed diversity for classical baselines.** Classical PPO and DQN were each run with a single seed (42), preventing a fair variance comparison. Future work should run classical baselines across 3+ seeds.
 
@@ -221,7 +256,7 @@ Our classical PPO baseline is competitive with published results, validating our
 
 5. **Stochasticity in quantum circuit outcomes.** Even ConfigC_best (seed=2, same as the best ConfigC run) produces different final performance (161.8 vs 230.9), suggesting sensitivity to factors beyond the random seed, possibly including floating-point nondeterminism in circuit simulation.
 
-### 7.3 Recommendations for Future Work
+### 8.3 Recommendations for Future Work
 
 1. **Run all algorithms with 5+ seeds** to enable statistically meaningful comparisons (e.g., confidence intervals, hypothesis tests)
 2. **Investigate quantum circuit depth and width**: try 3-layer circuits, 6/8 qubits
@@ -229,7 +264,7 @@ Our classical PPO baseline is competitive with published results, validating our
 4. **Profile training time** to quantify the computational overhead of quantum simulation vs performance gains
 5. **Evaluate on additional environments** (CartPole, Acrobot, MountainCar) to assess generalization of the hybrid approach
 
-## 8. Conclusion
+## 9. Conclusion
 
 The hybrid quantum-classical PPO agent demonstrates the ability to solve LunarLander-v3, with the best configuration (ConfigC, seed=2) achieving a mean return of **230.9** over the final 100 episodes. This performance is competitive with, though slightly below, the classical PPO baseline (254.2). The QRL agent shows a notable advantage in parameter efficiency, outperforming a classical PPO with similar parameter count by a wide margin (230.9 vs 116.0).
 

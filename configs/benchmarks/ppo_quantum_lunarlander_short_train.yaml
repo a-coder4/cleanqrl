@@ -1,6 +1,6 @@
 trial_path:             logs
-trial_name:             ppo_lunarlander_stable_B
-wandb:                  True
+trial_name:             qppo_short_trained_lunarlander
+wandb:                  False
 project_name:           cleanqrl
 
 ray_local_mode:         False
@@ -10,34 +10,34 @@ num_samples:            1
 cpus_per_worker:        1
 gpus_per_worker:        0
 
+agent:                  ppo_quantum_hybrid
 env_id:                 LunarLander-v3
-standardize_lunarlander: True
+standardize_lunarlander: False
 observation_preprocessing: none
-seed_set:               [0, 1, 2, 3, 4]
-eval_interval:          100000
-checkpoint_interval:    100000
-eval_episodes:          10
-success_reward_threshold: 200.0
 
-agent:                  PPO_classical
-total_timesteps:        2000000
-
-learning_rate:          0.0003
-num_envs:               8
+total_timesteps:        25000
 seed:                   0
-num_steps:              1000
-anneal_lr:              False
+num_envs:               4
+num_steps:              250
+
+learning_rate:          0.0005
+anneal_lr:              True
+num_minibatches:        10
+update_epochs:          4
 gamma:                  0.99
 gae_lambda:             0.95
-num_minibatches:        32
-update_epochs:          10
-norm_adv:               True
 clip_coef:              0.2
 clip_vloss:             True
+norm_adv:               True
 ent_coef:               0.001
 vf_coef:                0.5
 max_grad_norm:          0.5
-target_kl:              0.012
+target_kl:              0.02
+
+eval_interval:          5000
+checkpoint_interval:    5000
+eval_episodes:          5
+success_reward_threshold: 200.0
 
 cuda:                   False
 save_model:             True

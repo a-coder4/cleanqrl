@@ -12,6 +12,15 @@ import argparse
 import yaml
 from datetime import datetime
 from collections import deque
+from cleanqrl.experiment import (
+    diagnostic_metrics,
+    episode_metrics,
+    evaluate_greedy_policy,
+    log_metrics,
+    make_env,
+    maybe_save_checkpoint,
+    standardize_lunarlander_config,
+)
 
 # --- CONFIGURATION ---
 CONFIG = {
@@ -19,7 +28,7 @@ CONFIG = {
     "total_timesteps": 2000000,
     "learning_rate": 0.0005,
     "num_envs": 4,
-    "num_steps": 1024,
+    "num_steps": 1000,
     "anneal_lr": True,
     "gamma": 0.99,
     "gae_lambda": 0.95,
@@ -31,9 +40,17 @@ CONFIG = {
     "vf_coef": 0.5,
     "max_grad_norm": 0.5,
     "target_kl": 0.02,
-    "batch_size": 4096,
-    "minibatch_size": 128,
-    "trial_name": "ppo_tiny_classical" # Added for config saving
+    "batch_size": 4000,
+    "minibatch_size": 125,
+    "trial_name": "ppo_tiny_classical",
+    "agent": "PPO_tiny_classical",
+    "wandb": False,
+    "save_model": True,
+    "standardize_lunarlander": True,
+    "observation_preprocessing": "none",
+    "eval_interval": 100000,
+    "checkpoint_interval": 100000,
+    "eval_episodes": 10,
 }
 
 # --- TINY AGENT (~840 Params) ---
@@ -76,18 +93,25 @@ class TinyClassicalAgent(nn.Module):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=42, help="seed of the experiment")
+    parser.add_argument("--path", default=None, help="Optional explicit log directory.")
+    parser.add_argument("--trial-name", default=None, help="Optional explicit trial name.")
     args = parser.parse_args()
+    CONFIG["seed"] = args.seed
+    standardize_lunarlander_config(CONFIG)
 
     # --- PATH SETUP (MATCHING main.py) ---
     repo_root = os.path.dirname(os.path.abspath(__file__))
     logs_root = os.path.join(repo_root, "logs")
     
-    # Create unique timestamped name
-    timestamp = datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
-    trial_name = f"{timestamp}_{CONFIG['trial_name']}_seed{args.seed}"
-    
-    # Final path: ./logs/2026-02-12--..._ppo_tiny_classical_seed1
-    log_path = os.path.join(logs_root, trial_name)
+    if args.path is not None:
+        log_path = os.path.abspath(args.path)
+        trial_name = args.trial_name or os.path.basename(log_path)
+    else:
+        timestamp = datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
+        trial_name = args.trial_name or f"{timestamp}_{CONFIG['trial_name']}_seed{args.seed}"
+        log_path = os.path.join(logs_root, trial_name)
+    CONFIG["path"] = log_path
+    CONFIG["trial_name"] = trial_name
     os.makedirs(log_path, exist_ok=True)
     
     print(f"Logging to: {log_path}")
@@ -108,55 +132,14 @@ if __name__ == "__main__":
     episode_returns = deque(maxlen=print_interval)
     global_episodes = 0
 
-    def log_metrics(config, metrics, report_path=None):
-        # Minimal compatibility with other scripts' behavior
-        try:
-            import wandb
-        except Exception:
-            wandb = None
-
-        try:
-            import ray
-        except Exception:
-            ray = None
-
-        if isinstance(config, dict) and config.get("wandb", False) and wandb is not None:
-            try:
-                wandb.log(metrics)
-            except Exception:
-                pass
-
-        if ray is not None and ray.is_initialized():
-            try:
-                ray.train.report(metrics=metrics)
-            except Exception:
-                pass
-        else:
-            if report_path is not None:
-                with open(os.path.join(str(report_path), "result.json"), "a") as f:
-                    json.dump(metrics, f)
-                    f.write("\n")
-            else:
-                # fallback: append to json_file_path if provided
-                with open(json_file_path, "a") as f:
-                    json.dump(metrics, f)
-                    f.write("\n")
-    
     # Seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    # Env Setup: use a factory that adds RecordEpisodeStatistics so episode info is available
-    def make_env_fn(env_id):
-        def thunk():
-            env = gym.make(env_id)
-            env = gym.wrappers.RecordEpisodeStatistics(env)
-            return env
-
-        return thunk
-
-    envs = gym.vector.SyncVectorEnv([make_env_fn(CONFIG["env_id"]) for _ in range(CONFIG["num_envs"])])
+    envs = gym.vector.SyncVectorEnv(
+        [make_env(CONFIG["env_id"], CONFIG) for _ in range(CONFIG["num_envs"])]
+    )
     
     obs_shape = envs.single_observation_space.shape
     assert obs_shape is not None, "Env shape is None"
@@ -167,6 +150,7 @@ if __name__ == "__main__":
     optimizer = optim.Adam(agent.parameters(), lr=CONFIG["learning_rate"], eps=1e-5)
 
     print(f"Starting Tiny Classical Training (Seed {args.seed}) | ~840 params")
+    start_time = time.time()
     
     # Initialize storage
     obs = torch.zeros((CONFIG["num_steps"], CONFIG["num_envs"]) + obs_shape).to(device) # type: ignore
@@ -177,7 +161,7 @@ if __name__ == "__main__":
     values = torch.zeros((CONFIG["num_steps"], CONFIG["num_envs"])).to(device)
 
     global_step = 0
-    next_obs = torch.Tensor(envs.reset()[0]).to(device)
+    next_obs = torch.Tensor(envs.reset(seed=args.seed)[0]).to(device)
     next_done = torch.zeros(CONFIG["num_envs"]).to(device)
     num_updates = CONFIG["total_timesteps"] // CONFIG["batch_size"]
 
@@ -218,12 +202,8 @@ if __name__ == "__main__":
                         writer.add_scalar("charts/episodic_return", float(ep_r), global_step)
 
                         # JSON logging (one JSON object per line)
-                        metrics = {
-                            "global_step": int(global_step),
-                            "episode_reward": float(ep_r),
-                            "charts/episodic_return": float(ep_r),
-                            "episode_length": int(ep_l),
-                        }
+                        metrics = episode_metrics(CONFIG, ep_r, ep_l, global_step)
+                        metrics["charts/episodic_return"] = float(ep_r)
                         log_metrics(CONFIG, metrics, log_path)
 
                 # print progress periodically when not running under Ray
@@ -292,6 +272,29 @@ if __name__ == "__main__":
             
             if CONFIG["target_kl"] is not None and approx_kl > CONFIG["target_kl"]:
                 break
+        log_metrics(
+            CONFIG,
+            diagnostic_metrics(
+                CONFIG,
+                global_step,
+                start_time,
+                learning_rate=optimizer.param_groups[0]["lr"],
+                value_loss=v_loss.item(),
+                policy_loss=pg_loss.item(),
+                entropy=entropy_loss.item(),
+                approx_kl=approx_kl.item(),
+                SPS=int(global_step / (time.time() - start_time)),
+            ),
+            log_path,
+        )
+        evaluate_greedy_policy(
+            CONFIG,
+            lambda eval_obs: torch.argmax(agent.actor(eval_obs), dim=1).cpu().numpy(),
+            device,
+            global_step,
+            log_path,
+        )
+        maybe_save_checkpoint(CONFIG, agent, log_path, trial_name, global_step)
 
     # Save
     torch.save(agent.state_dict(), f"{log_path}/tiny_model.pth")

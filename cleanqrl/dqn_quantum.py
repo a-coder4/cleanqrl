@@ -20,27 +20,17 @@ import torch.optim as optim
 import wandb
 import yaml
 from typing import Optional
+from cleanqrl.experiment import (
+    diagnostic_metrics,
+    episode_metrics,
+    evaluate_greedy_policy,
+    log_metrics,
+    make_env,
+    maybe_save_checkpoint,
+    standardize_lunarlander_config,
+)
 from ray.train._internal.session import get_session
 from replay_buffer import ReplayBuffer, ReplayBufferWrapper
-
-
-class ArctanNormalizationWrapper(gym.ObservationWrapper):
-    def observation(self, obs):
-        return np.arctan(obs)
-
-
-# ENV LOGIC: create your env (with config) here:
-def make_env(env_id, config):
-    def thunk():
-        env = gym.make(env_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        # The observation wrapper has a big impact on quantum agent performance. May need to be adjusted.
-        env = ArctanNormalizationWrapper(env)
-        env = ReplayBufferWrapper(env)
-
-        return env
-
-    return thunk
 
 
 # QUANTUM CIRCUIT: define your ansatz here:
@@ -116,23 +106,9 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope = (end_e - start_e) / duration
     return max(slope * t + start_e, end_e)
 
-
-def log_metrics(config, metrics, report_path=None):
-    if config["wandb"]:
-        wandb.log(metrics)
-    if ray.is_initialized():
-        ray.train.report(metrics=metrics)
-    else:
-        if report_path is not None:
-            with open(os.path.join(str(report_path), "result.json"), "a") as f:
-                json.dump(metrics, f)
-                f.write("\n")
-        else:
-            raise ValueError("report_path is None, cannot write result.json")
-
-
 # MAIN TRAINING FUNCTION
 def dqn_quantum(config: dict):
+    config = standardize_lunarlander_config(config)
     cuda = config["cuda"]
     env_id = config["env_id"]
     num_envs = config["num_envs"]
@@ -194,7 +170,10 @@ def dqn_quantum(config: dict):
         raise AssertionError(f"{env_id} is not a valid gymnasium environment")
 
     # env setup
-    envs = gym.vector.SyncVectorEnv([make_env(env_id, config) for i in range(num_envs)])
+    envs = gym.vector.SyncVectorEnv(
+        [make_env(env_id, config, ReplayBufferWrapper) for i in range(num_envs)]
+    )
+    envs.single_action_space.seed(seed)
     assert isinstance(
         envs.single_action_space, gym.spaces.Discrete
     ), "only discrete action space is supported"
@@ -238,7 +217,9 @@ def dqn_quantum(config: dict):
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=seed)
-    for global_step in range(total_timesteps):
+    total_updates = total_timesteps // num_envs
+    for update_step in range(total_updates):
+        global_step = (update_step + 1) * num_envs
         # ALGO LOGIC: put action logic here
         epsilon = linear_schedule(
             start_e, end_e, exploration_fraction * total_timesteps, global_step
@@ -262,9 +243,12 @@ def dqn_quantum(config: dict):
                     metrics = {}
                     global_episodes += 1
                     episode_returns.append(infos["episode"]["r"].tolist()[idx])
-                    metrics["episode_reward"] = infos["episode"]["r"].tolist()[idx]
-                    metrics["episode_length"] = infos["episode"]["l"].tolist()[idx]
-                    metrics["global_step"] = global_step
+                    metrics = episode_metrics(
+                        config,
+                        infos["episode"]["r"].tolist()[idx],
+                        infos["episode"]["l"].tolist()[idx],
+                        global_step,
+                    )
                     log_metrics(config, metrics, report_path)
 
             if global_episodes % print_interval == 0 and not ray.is_initialized():
@@ -303,11 +287,15 @@ def dqn_quantum(config: dict):
                 circuit_evaluations += 2*batch_size*sum([q_network.input_scaling.numel(), q_network.weights.numel(), q_network.output_scaling.numel()])
                 
                 if global_step % 100 == 0:
-                    metrics = {}
-                    metrics["td_loss"] = loss.item()
-                    metrics["q_values"] = old_val.mean().item()
-                    metrics["SPS"] = int(global_step / (time.time() - start_time))
-                    metrics["circuit_evaluations"] = circuit_evaluations
+                    metrics = diagnostic_metrics(
+                        config,
+                        global_step,
+                        start_time,
+                        td_loss=loss.item(),
+                        q_values=old_val.mean().item(),
+                        SPS=int(global_step / (time.time() - start_time)),
+                        circuit_evaluations=circuit_evaluations,
+                    )
                     log_metrics(config, metrics, report_path)
                 # optimize the model
                 optimizer.zero_grad()
@@ -323,6 +311,14 @@ def dqn_quantum(config: dict):
                         tau * q_network_param.data
                         + (1.0 - tau) * target_network_param.data
                     )
+        evaluate_greedy_policy(
+            config,
+            lambda eval_obs: torch.argmax(q_network(eval_obs), dim=1).cpu().numpy(),
+            device,
+            global_step,
+            report_path,
+        )
+        maybe_save_checkpoint(config, q_network, report_path, name, global_step)
 
     if config["save_model"]:
         model_path = f"{os.path.join(report_path, name)}.cleanqrl_model"

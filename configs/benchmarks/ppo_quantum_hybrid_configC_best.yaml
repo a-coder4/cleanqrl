@@ -1,15 +1,22 @@
 agent:                  ppo_quantum_hybrid
 env_id:                 LunarLander-v3
 trial_name:             qppo_hybrid_configC_best
+standardize_lunarlander: True
+observation_preprocessing: none
+seed_set:               [0, 1, 2, 3, 4]
+eval_interval:          100000
+checkpoint_interval:    100000
+eval_episodes:          10
+success_reward_threshold: 200.0
 
 # Config C: Final Polish (from best run 06:56:04)
 num_envs:               4
-total_timesteps:        1500000     # 1.5M steps (enough to solve)
+total_timesteps:        2000000
 
 # PPO Hyperparams
 learning_rate:          0.0005
 anneal_lr:              True        # ENABLED: Decays LR to 0 to freeze winning policy
-num_steps:              1024
+num_steps:              1000
 num_minibatches:        32          # 32 batches = smoother gradient updates
 update_epochs:          10
 gamma:                  0.99
@@ -27,5 +34,5 @@ cuda:                   False       # Quantum Sim is usually CPU-bound
 # Logging
 wandb:                  True
 project_name:           cleanqrl
-seed:                   2           # Same seed as best run
+seed:                   0
 save_model:             True

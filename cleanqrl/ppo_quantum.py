@@ -18,25 +18,17 @@ import torch.nn as nn
 import torch.optim as optim
 import wandb
 import yaml
+from cleanqrl.experiment import (
+    diagnostic_metrics,
+    episode_metrics,
+    evaluate_greedy_policy,
+    log_metrics,
+    make_env,
+    maybe_save_checkpoint,
+    standardize_lunarlander_config,
+)
 from ray.train._internal.session import get_session
 from torch.distributions.categorical import Categorical
-
-
-class ArctanNormalizationWrapper(gym.ObservationWrapper):
-    def observation(self, obs):
-        return np.arctan(obs)
-
-
-# ENV LOGIC: create your env (with config) here:
-def make_env(env_id, config):
-    def thunk():
-        env = gym.make(env_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        # The observation wrapper has a big impact on quantum agent performance. May need to be adjusted.
-        env = ArctanNormalizationWrapper(env)
-        return env
-
-    return thunk
 
 
 # QUANTUM CIRCUIT: define your ansatz here:
@@ -151,22 +143,25 @@ class PPOAgentQuantum(nn.Module):
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.get_value(x)
 
-
-def log_metrics(config, metrics, report_path=None):
-    if config["wandb"]:
-        wandb.log(metrics)
-    if ray.is_initialized():
-        ray.train.report(metrics=metrics)
-    else:
-        if report_path is None:
-            raise ValueError("report_path must not be None when logging metrics.")
-        with open(os.path.join(str(report_path), "result.json"), "a") as f:
-            json.dump(metrics, f)
-            f.write("\n")
+    def get_greedy_action(self, x):
+        logits = self.quantum_circuit(
+            x,
+            self.input_scaling_actor,
+            self.weights_actor,
+            self.num_qubits,
+            self.num_layers,
+            self.num_actions,
+            self.observation_size,
+            "actor",
+        )
+        logits = torch.stack(logits, dim=1)
+        logits = logits * self.output_scaling_actor
+        return torch.argmax(logits, dim=1)
 
 
 # MAIN TRAINING FUNCTION
 def ppo_quantum(config):
+    config = standardize_lunarlander_config(config)
     num_envs = config["num_envs"]
     num_steps = config["num_steps"]
     num_minibatches = config["num_minibatches"]
@@ -340,9 +335,12 @@ def ppo_quantum(config):
                         metrics = {}
                         global_episodes += 1
                         episode_returns.append(infos["episode"]["r"].tolist()[idx])
-                        metrics["episode_reward"] = infos["episode"]["r"].tolist()[idx]
-                        metrics["episode_length"] = infos["episode"]["l"].tolist()[idx]
-                        metrics["global_step"] = global_step
+                        metrics = episode_metrics(
+                            config,
+                            infos["episode"]["r"].tolist()[idx],
+                            infos["episode"]["l"].tolist()[idx],
+                            global_step,
+                        )
                         log_metrics(config, metrics, report_path)
 
                 if global_episodes % print_interval == 0 and not ray.is_initialized():
@@ -453,20 +451,32 @@ def ppo_quantum(config):
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        metrics = {}
-        metrics["lr_input_scaling"] = optimizer.param_groups[0]["lr"]
-        metrics["lr_output_scaling"] = optimizer.param_groups[1]["lr"]
-        metrics["lr_weights"] = optimizer.param_groups[2]["lr"]
-        metrics["value_loss"] = v_loss.item()
-        metrics["policy_loss"] = pg_loss.item()
-        metrics["entropy"] = entropy_loss.item()
-        metrics["old_approx_kl"] = old_approx_kl.item()
-        metrics["approx_kl"] = approx_kl.item()
-        metrics["clipfrac"] = np.mean(clipfracs)
-        metrics["explained_variance"] = np.mean(explained_var)
-        metrics["SPS"] = int(global_step / (time.time() - start_time))
-        metrics["circuit_evaluations"] = circuit_evaluations
+        metrics = diagnostic_metrics(
+            config,
+            global_step,
+            start_time,
+            lr_input_scaling=optimizer.param_groups[0]["lr"],
+            lr_output_scaling=optimizer.param_groups[1]["lr"],
+            lr_weights=optimizer.param_groups[2]["lr"],
+            value_loss=v_loss.item(),
+            policy_loss=pg_loss.item(),
+            entropy=entropy_loss.item(),
+            old_approx_kl=old_approx_kl.item(),
+            approx_kl=approx_kl.item(),
+            clipfrac=np.mean(clipfracs),
+            explained_variance=np.mean(explained_var),
+            SPS=int(global_step / (time.time() - start_time)),
+            circuit_evaluations=circuit_evaluations,
+        )
         log_metrics(config, metrics, report_path)
+        evaluate_greedy_policy(
+            config,
+            lambda eval_obs: agent.get_greedy_action(eval_obs).cpu().numpy(),
+            device,
+            global_step,
+            report_path,
+        )
+        maybe_save_checkpoint(config, agent, report_path, name, global_step)
 
     if config["save_model"]:
         model_path = f"{os.path.join(report_path, name)}.cleanqrl_model"
