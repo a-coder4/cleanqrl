@@ -1,30 +1,30 @@
 # LunarLander Compute-Cost Comparison
 
-| Agent | Category | Steps | Wall-clock (s) | QPU exec. (s) | SPS | Circuit evals | Final reward | Success/agreement | Status |
+| Agent | Category | Steps | Wall-clock (s) | QPU exec. (s) | SPS | Circuit evals | Final reward | Success rate | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| PPO | Full-training classical | 2,000,000 | 362.5 |  | 5,516 | 0 | 282.657 | 1 | complete full-training result |
-| PPO-tiny | Full-training classical | 2,000,000 | 531.9 |  | 3,760 | 0 | 170.232 | 0.500 | complete full-training result |
-| DQN | Full-training classical | 2,000,000 | 436.7 |  | 2,853.5 | 0 | 263.940 | 1 | complete full-training result |
-| QPPO/QRL short-trained | Short-trained simulator feasibility | 25,000 | 1,395.3 |  | 17 | 125,000 | -626.445 | 0 | short-trained only; not comparable as full-training final performance |
-| IBM QPPO hardware inference | IBM inference-only feasibility | 0 | 1,617.9 | 2 |  | 500 |  | 0.800 | inference-only; no training and no environment rollout reward |
+| PPO | Matched 100k classical | 100,000 | 23.2 |  | 4,318.7 | 0 | -233.738 | 0 | complete matched-budget result |
+| PPO-tiny | Matched 100k classical | 100,000 | 24.5 |  | 4,077.7 | 0 | -1,187.776 | 0 | complete matched-budget result |
+| DQN | Matched 100k classical | 100,000 | 33.7 |  | 2,968.3 | 0 | -156.345 | 0 | complete matched-budget result |
+| Quantum DQN | Matched 100k quantum | 100,000 | 25,599.0 |  | 3 | 358,654,043 | -217.484 | 0 | complete matched-budget result |
+| QRL | Matched 100k quantum | 100,000 | 10,113.8 |  | 9.3 | 1,100,000 | -815.517 | 0 | complete matched-budget result |
 
 ## Plots
 
 ![SPS comparison](compute_cost_sps.png)
 
-**Caption.** Steps per second for completed classical training runs and the short-trained QPPO/QRL simulator run. IBM hardware inference has no environment-training SPS and is shown as zero.
+**Caption.** Steps per second for completed matched-budget LunarLander runs.
 
 ![Wall-clock comparison](compute_cost_wall_clock_time.png)
 
-**Caption.** Wall-clock seconds for each run category. Classical rows are full-training runs; QPPO/QRL is a short 25k-step simulator training run; IBM is total inference job/script wall-clock time for five fixed states, not the dashboard QPU execution time.
+**Caption.** Wall-clock seconds for each completed matched-budget LunarLander run category.
 
 ![Circuit evaluation comparison](compute_cost_circuit_evaluations.png)
 
-**Caption.** Circuit evaluation or shot cost. Classical models have zero circuit evaluations, short-trained QPPO/QRL reports simulated circuit evaluations during training, and IBM reports five circuits times 100 shots.
+**Caption.** Circuit evaluation cost. Classical models have zero circuit evaluations; quantum rows report simulated circuit evaluations during matched-budget training.
 
 ## Report-Ready Interpretation
 
-The compute-cost results separate completed classical full-training runs from short-trained QPPO/QRL and IBM hardware inference-only feasibility runs. QPPO/QRL can reduce trainable parameter count relative to the full PPO actor-critic, but the simulated quantum circuit path introduces major runtime overhead: the short-trained QPPO run completed only 25,000 environment interactions in 1,395 seconds at 17 SPS while accumulating 125,000 simulated circuit evaluations. By contrast, the completed classical baselines reached the full 2,000,000-step budget in minutes with thousands of SPS and no circuit-evaluation cost. The IBM result should be treated separately as inference-only hardware feasibility: it ran five fixed actor circuits with 100 shots each and reports action agreement, not training reward or quantum advantage.
+The compute-cost results use the completed matched 100,000-step LunarLander cohort. This keeps environment interactions, seed protocol, and evaluation cadence aligned across PPO, PPO-tiny, DQN, Quantum DQN, and QRL. The quantum agents complete the same nominal training budget, but their wall-clock cost is much higher because simulated circuit evaluation dominates throughput.
 
 ## IBM QPU Hardware Details
 
@@ -46,8 +46,5 @@ The IBM hardware run separates end-to-end script/job wall-clock time from actual
 
 ## Notes
 
-- Full-training classical rows come from `lunarlander_aggregate_results.csv` with `included_in_plots == yes`.
-- Short-trained QPPO/QRL comes from `logs/*qppo_short_trained_lunarlander*/result.json`.
-- IBM hardware inference comes from `results/ibm_qppo_short_trained_inference_results.md`.
-- The IBM row's wall-clock time is total script/job time from the output file, while QPU execution time is the dashboard-reported hardware runtime.
-- For the IBM inference-only row, the success/agreement column stores action agreement rate, not LunarLander success rate.
+- Rows come from `lunarlander_aggregate_results.csv` with `included_in_plots == yes`.
+- The IBM inference artifact remains separate because it is inference-only, not a matched training run.

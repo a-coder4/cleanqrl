@@ -1,5 +1,0 @@
-agent,policy_actor_params,critic_value_params,q_network_params,quantum_circuit_params,total_trainable_params,source,notes
-PPO,4996,4801,,0,9797,cleanqrl/ppo_classical.py::PPOAgentClassical,Actor and critic are separate 8-64-64-output MLPs.
-PPO-tiny,420,321,,0,741,ppo_classical_lunarlander_tinyparam.py::TinyClassicalAgent,Tiny actor and critic each use one hidden layer with 32 units.
-DQN,11584,0,11584,0,11584,cleanqrl/dqn_classical.py::DQNAgentClassical,Counts the optimized online Q-network only; target network is a synchronized copy.
-QPPO/QRL short-trained,861,4801,,24,5662,cleanqrl/ppo_quantum_hybrid.py::Agent; configs/benchmarks/ppo_quantum_lunarlander_short_train.yaml,"Hybrid actor includes an 8-64-4 classical encoder, 24 variational circuit weights, and one actor scale parameter."

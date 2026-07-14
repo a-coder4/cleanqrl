@@ -1,9 +1,7 @@
-"""Build compute-cost comparison artifacts for LunarLander experiments.
+"""Build compute-cost comparison artifacts for matched LunarLander experiments.
 
 Inputs:
-- lunarlander_aggregate_results.csv for completed full-training classical runs.
-- logs/*qppo_short_trained_lunarlander*/result.json for the short QPPO/QRL run.
-- results/ibm_qppo_short_trained_inference_results.md for IBM hardware inference.
+- lunarlander_aggregate_results.csv for completed matched-budget runs.
 
 Outputs:
 - compute_cost_comparison.csv
@@ -37,6 +35,15 @@ SPS_PLOT = Path("compute_cost_sps.png")
 WALL_CLOCK_PLOT = Path("compute_cost_wall_clock_time.png")
 CIRCUIT_PLOT = Path("compute_cost_circuit_evaluations.png")
 IBM_QPU_EXECUTION_TIME_SECONDS = 2.0
+AGENT_ORDER = ["PPO", "PPO-tiny", "DQN", "Quantum DQN", "QRL"]
+QUANTUM_AGENTS = {"Quantum DQN", "QRL"}
+COLORS = {
+    "PPO": "#4169e1",
+    "PPO-tiny": "#00a676",
+    "DQN": "#d95f02",
+    "Quantum DQN": "#b35806",
+    "QRL": "#7b3294",
+}
 IBM_HARDWARE_SPECS = {
     "Backend": "ibm_kingston",
     "Processor type": "Heron r2",
@@ -101,7 +108,7 @@ def format_number(value: object, digits: int = 3) -> str:
     return f"{numeric:,.{digits}f}"
 
 
-def load_classical_full_training_rows() -> list[dict[str, object]]:
+def load_matched_training_rows() -> list[dict[str, object]]:
     if not AGGREGATE_CSV.exists():
         return []
 
@@ -116,7 +123,7 @@ def load_classical_full_training_rows() -> list[dict[str, object]]:
     run_summaries: list[dict[str, object]] = []
     for run_name, run_records in by_run.items():
         label = str(run_records[0].get("agent_label") or run_records[0].get("agent") or "")
-        if label not in {"PPO", "PPO-tiny", "DQN"}:
+        if label not in set(AGENT_ORDER):
             continue
 
         final_eval = latest_by_timestep(run_records, "evaluation")
@@ -143,24 +150,27 @@ def load_classical_full_training_rows() -> list[dict[str, object]]:
         )
 
     rows = []
-    for agent in ["PPO", "PPO-tiny", "DQN"]:
+    for agent in AGENT_ORDER:
         runs = [r for r in run_summaries if r["agent"] == agent]
         if not runs:
             continue
+        category = "Matched 100k quantum" if agent in QUANTUM_AGENTS else "Matched 100k classical"
         rows.append(
             {
                 "agent": agent,
-                "category": "Full-training classical",
+                "category": category,
                 "runs": len(runs),
                 "environment_steps_completed": mean(as_float(r["environment_steps_completed"]) for r in runs),
                 "wall_clock_time_seconds": mean(as_float(r["wall_clock_time_seconds"]) for r in runs),
                 "qpu_execution_time_seconds": None,
                 "SPS": mean(as_float(r["SPS"]) for r in runs),
-                "circuit_evaluations": 0,
+                "circuit_evaluations": mean(as_float(r["circuit_evaluations"]) for r in runs)
+                if agent in QUANTUM_AGENTS
+                else 0,
                 "final_reward": mean(as_float(r["final_reward"]) for r in runs),
                 "success_rate": mean(as_float(r["success_rate"]) for r in runs),
-                "status": "complete full-training result",
-                "notes": "Included by fairness checker and aggregate plotting rules.",
+                "status": "complete matched-budget result",
+                "notes": "Included by matched 100k fairness checker and aggregate plotting rules.",
             }
         )
     return rows
@@ -248,9 +258,7 @@ def load_ibm_inference_row() -> list[dict[str, object]]:
 
 def build_rows() -> list[dict[str, object]]:
     rows = []
-    rows.extend(load_classical_full_training_rows())
-    rows.extend(load_short_qppo_rows())
-    rows.extend(load_ibm_inference_row())
+    rows.extend(load_matched_training_rows())
     return rows
 
 
@@ -278,7 +286,7 @@ def write_csv(rows: list[dict[str, object]]) -> None:
 def write_bar_plot(rows: list[dict[str, object]], metric: str, output_path: Path, title: str, ylabel: str, log_scale: bool = False) -> None:
     labels = [str(r["agent"]).replace(" short-trained", "") for r in rows]
     values = [as_float(r.get(metric)) or 0 for r in rows]
-    colors = ["#4169e1", "#00a676", "#d95f02", "#7b3294", "#595959"]
+    colors = [COLORS.get(str(r["agent"]), "#666666") for r in rows]
 
     fig, ax = plt.subplots(figsize=(9, 4.8))
     bars = ax.bar(labels, values, color=colors[: len(labels)])
@@ -322,7 +330,7 @@ def markdown_table(rows: list[dict[str, object]]) -> str:
         "SPS",
         "Circuit evals",
         "Final reward",
-        "Success/agreement",
+        "Success rate",
         "Status",
     ]
     lines = [
@@ -349,18 +357,12 @@ def markdown_table(rows: list[dict[str, object]]) -> str:
 
 def write_markdown(rows: list[dict[str, object]]) -> None:
     paragraph = (
-        "The compute-cost results separate completed classical full-training runs "
-        "from short-trained QPPO/QRL and IBM hardware inference-only feasibility "
-        "runs. QPPO/QRL can reduce trainable parameter count relative to the full "
-        "PPO actor-critic, but the simulated quantum circuit path introduces major "
-        "runtime overhead: the short-trained QPPO run completed only 25,000 "
-        "environment interactions in 1,395 seconds at 17 SPS while accumulating "
-        "125,000 simulated circuit evaluations. By contrast, the completed "
-        "classical baselines reached the full 2,000,000-step budget in minutes "
-        "with thousands of SPS and no circuit-evaluation cost. The IBM result "
-        "should be treated separately as inference-only hardware feasibility: it "
-        "ran five fixed actor circuits with 100 shots each and reports action "
-        "agreement, not training reward or quantum advantage."
+        "The compute-cost results use the completed matched 100,000-step "
+        "LunarLander cohort. This keeps environment interactions, seed protocol, "
+        "and evaluation cadence aligned across PPO, PPO-tiny, DQN, Quantum DQN, "
+        "and QRL. The quantum agents complete the same nominal training budget, "
+        "but their wall-clock cost is much higher because simulated circuit "
+        "evaluation dominates throughput."
     )
     ibm_paragraph = (
         "The IBM hardware run separates end-to-end script/job wall-clock time "
@@ -387,15 +389,15 @@ def write_markdown(rows: list[dict[str, object]]) -> None:
 
 ![SPS comparison]({SPS_PLOT.as_posix()})
 
-**Caption.** Steps per second for completed classical training runs and the short-trained QPPO/QRL simulator run. IBM hardware inference has no environment-training SPS and is shown as zero.
+**Caption.** Steps per second for completed matched-budget LunarLander runs.
 
 ![Wall-clock comparison]({WALL_CLOCK_PLOT.as_posix()})
 
-**Caption.** Wall-clock seconds for each run category. Classical rows are full-training runs; QPPO/QRL is a short 25k-step simulator training run; IBM is total inference job/script wall-clock time for five fixed states, not the dashboard QPU execution time.
+**Caption.** Wall-clock seconds for each completed matched-budget LunarLander run category.
 
 ![Circuit evaluation comparison]({CIRCUIT_PLOT.as_posix()})
 
-**Caption.** Circuit evaluation or shot cost. Classical models have zero circuit evaluations, short-trained QPPO/QRL reports simulated circuit evaluations during training, and IBM reports five circuits times 100 shots.
+**Caption.** Circuit evaluation cost. Classical models have zero circuit evaluations; quantum rows report simulated circuit evaluations during matched-budget training.
 
 ## Report-Ready Interpretation
 
@@ -409,11 +411,8 @@ def write_markdown(rows: list[dict[str, object]]) -> None:
 
 ## Notes
 
-- Full-training classical rows come from `lunarlander_aggregate_results.csv` with `included_in_plots == yes`.
-- Short-trained QPPO/QRL comes from `logs/*qppo_short_trained_lunarlander*/result.json`.
-- IBM hardware inference comes from `results/ibm_qppo_short_trained_inference_results.md`.
-- The IBM row's wall-clock time is total script/job time from the output file, while QPU execution time is the dashboard-reported hardware runtime.
-- For the IBM inference-only row, the success/agreement column stores action agreement rate, not LunarLander success rate.
+- Rows come from `lunarlander_aggregate_results.csv` with `included_in_plots == yes`.
+- The IBM inference artifact remains separate because it is inference-only, not a matched training run.
 """
     OUTPUT_MD.write_text(content, encoding="utf-8")
 

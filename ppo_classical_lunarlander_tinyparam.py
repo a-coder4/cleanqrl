@@ -95,8 +95,33 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42, help="seed of the experiment")
     parser.add_argument("--path", default=None, help="Optional explicit log directory.")
     parser.add_argument("--trial-name", default=None, help="Optional explicit trial name.")
+    parser.add_argument(
+        "--total-timesteps",
+        type=int,
+        default=None,
+        help="Optional training budget override.",
+    )
+    parser.add_argument(
+        "--eval-interval",
+        type=int,
+        default=None,
+        help="Optional evaluation interval override.",
+    )
+    parser.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=None,
+        help="Optional checkpoint interval override.",
+    )
     args = parser.parse_args()
     CONFIG["seed"] = args.seed
+    if args.total_timesteps is not None:
+        CONFIG["training_budget_timesteps"] = args.total_timesteps
+        CONFIG["total_timesteps"] = args.total_timesteps
+    if args.eval_interval is not None:
+        CONFIG["eval_interval"] = args.eval_interval
+    if args.checkpoint_interval is not None:
+        CONFIG["checkpoint_interval"] = args.checkpoint_interval
     standardize_lunarlander_config(CONFIG)
 
     # --- PATH SETUP (MATCHING main.py) ---

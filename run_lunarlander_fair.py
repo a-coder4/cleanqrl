@@ -16,9 +16,14 @@ except ModuleNotFoundError as exc:
         "  py -m pip install PyYAML"
     ) from exc
 
-from cleanqrl.experiment import LUNARLANDER_SEEDS, standardize_lunarlander_config
+from cleanqrl.experiment import standardize_lunarlander_config
 from cleanqrl_utils.train import train_agent
 
+
+FAIR_TIMESTEPS = 100_000
+FAIR_SEEDS = [0, 1, 2]
+EVAL_INTERVAL = 100_000
+CHECKPOINT_INTERVAL = 100_000
 
 STANDARDIZED_RUNS = [
     {"kind": "config", "path": "configs/benchmarks/ppo_classical_lunarlander.yaml"},
@@ -29,12 +34,63 @@ STANDARDIZED_RUNS = [
 ]
 
 
-def run_config(config_path: str, seed: int, repo_root: str):
+def align_ppo_rollout_batch(config: dict, total_timesteps: int) -> None:
+    if not str(config.get("agent", "")).lower().startswith("ppo"):
+        return
+
+    num_envs = int(config["num_envs"])
+    original_num_steps = int(config["num_steps"])
+    num_minibatches = int(config["num_minibatches"])
+    original_batch_size = num_envs * original_num_steps
+    if total_timesteps % original_batch_size == 0:
+        return
+
+    if total_timesteps % num_envs != 0:
+        raise ValueError(
+            f"{config['agent']} cannot run exactly {total_timesteps} steps with "
+            f"{num_envs} envs. Choose a total timestep count divisible by {num_envs}."
+        )
+
+    per_env_timesteps = total_timesteps // num_envs
+    candidates = []
+    for candidate_num_steps in range(1, per_env_timesteps + 1):
+        candidate_batch_size = num_envs * candidate_num_steps
+        if per_env_timesteps % candidate_num_steps != 0:
+            continue
+        if candidate_batch_size % num_minibatches != 0:
+            continue
+        candidates.append(candidate_num_steps)
+
+    if not candidates:
+        raise ValueError(
+            f"{config['agent']} cannot run exactly {total_timesteps} steps while "
+            f"keeping num_envs={num_envs} and num_minibatches={num_minibatches}."
+        )
+
+    num_steps = min(candidates, key=lambda value: (abs(value - original_num_steps), value))
+    config["num_steps"] = num_steps
+    print(
+        f"Adjusted {config['agent']} num_steps from {original_num_steps} to {num_steps} "
+        f"so {num_envs * num_steps} step rollouts divide {total_timesteps} exactly."
+    )
+
+
+def run_config(
+    config_path: str,
+    seed: int,
+    repo_root: str,
+    total_timesteps: int,
+):
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
     config["seed"] = seed
+    config["training_budget_timesteps"] = total_timesteps
+    config["total_timesteps"] = total_timesteps
+    config["eval_interval"] = EVAL_INTERVAL
+    config["checkpoint_interval"] = CHECKPOINT_INTERVAL
     standardize_lunarlander_config(config)
+    align_ppo_rollout_batch(config, total_timesteps)
     timestamp = datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
     config["trial_name"] = f"{timestamp}_{config['trial_name']}_seed{seed}"
     config["path"] = os.path.join(repo_root, "logs", config["trial_name"])
@@ -48,7 +104,7 @@ def run_config(config_path: str, seed: int, repo_root: str):
     verify_completed_run(config["path"], config["trial_name"])
 
 
-def run_tiny(seed: int, repo_root: str):
+def run_tiny(seed: int, repo_root: str, total_timesteps: int):
     timestamp = datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
     trial_name = f"{timestamp}_ppo_tiny_classical_seed{seed}"
     run_path = os.path.join(repo_root, "logs", trial_name)
@@ -62,6 +118,12 @@ def run_tiny(seed: int, repo_root: str):
             trial_name,
             "--path",
             run_path,
+            "--total-timesteps",
+            str(total_timesteps),
+            "--eval-interval",
+            str(EVAL_INTERVAL),
+            "--checkpoint-interval",
+            str(CHECKPOINT_INTERVAL),
         ],
         check=True,
     )
@@ -131,8 +193,14 @@ def main():
         "--seeds",
         nargs="*",
         type=int,
-        default=LUNARLANDER_SEEDS,
+        default=FAIR_SEEDS,
         help="Seed set shared by every agent.",
+    )
+    parser.add_argument(
+        "--total-timesteps",
+        type=int,
+        default=FAIR_TIMESTEPS,
+        help="Shared training budget for every agent.",
     )
     parser.add_argument(
         "--skip-tiny",
@@ -157,9 +225,14 @@ def main():
             if run_spec["kind"] == "script":
                 if args.skip_tiny:
                     continue
-                run_tiny(seed, repo_root)
+                run_tiny(seed, repo_root, args.total_timesteps)
             else:
-                run_config(os.path.join(repo_root, run_spec["path"]), seed, repo_root)
+                run_config(
+                    os.path.join(repo_root, run_spec["path"]),
+                    seed,
+                    repo_root,
+                    args.total_timesteps,
+                )
     if args.fairness_check:
         subprocess.run(
             [

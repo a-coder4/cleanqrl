@@ -27,9 +27,12 @@ COLORS = {
     "PPO": "#4169e1",
     "PPO-tiny": "#00a676",
     "DQN": "#d95f02",
+    "Quantum DQN": "#b35806",
+    "QRL": "#7b3294",
     "QPPO/QRL short-trained": "#7b3294",
     "IBM QPPO hardware inference": "#595959",
 }
+AGENT_ORDER = ["PPO", "PPO-tiny", "DQN", "Quantum DQN", "QRL"]
 
 
 def as_float(value: object) -> float | None:
@@ -78,7 +81,7 @@ def save_fig(path: Path) -> None:
     plt.close()
 
 
-def aggregate_classical_evaluations() -> dict[str, list[tuple[float, float]]]:
+def aggregate_matched_evaluations() -> dict[str, list[tuple[float, float]]]:
     records = read_csv(AGGREGATE_CSV)
     series: dict[str, list[tuple[float, float]]] = {}
     for row in records:
@@ -87,7 +90,7 @@ def aggregate_classical_evaluations() -> dict[str, list[tuple[float, float]]]:
         if row.get("metric_type") != "evaluation":
             continue
         agent = row.get("agent_label", "")
-        if agent not in {"PPO", "PPO-tiny", "DQN"}:
+        if agent not in set(AGENT_ORDER):
             continue
         timestep = as_float(row.get("timestep"))
         reward = as_float(row.get("evaluation_reward") or row.get("episode_reward"))
@@ -114,68 +117,81 @@ def qppo_short_evaluations() -> list[tuple[float, float]]:
 
 
 def plot_reward_comparison() -> tuple[str, str]:
-    filename = "fig_reward_curves_classical_full_and_qppo_short.png"
+    filename = "fig_reward_curves_matched_100k_all_algorithms.png"
     path = OUT_DIR / filename
-    classical = aggregate_classical_evaluations()
-    qppo = qppo_short_evaluations()
+    series = aggregate_matched_evaluations()
 
-    fig, (ax_full, ax_short) = plt.subplots(1, 2, figsize=(11, 4.6), gridspec_kw={"width_ratios": [1.35, 1]})
-    for agent in ["PPO", "PPO-tiny", "DQN"]:
-        points = classical.get(agent, [])
+    fig, ax = plt.subplots(figsize=(8.8, 4.8))
+    for agent in AGENT_ORDER:
+        points = series.get(agent, [])
         if not points:
             continue
         xs, ys = zip(*points)
-        ax_full.plot(xs, ys, marker="o", linewidth=1.8, markersize=3.2, label=agent, color=COLORS[agent])
-    ax_full.set_title("Full-training classical evaluation")
-    ax_full.set_xlabel("Environment steps")
-    ax_full.set_ylabel("Evaluation reward")
-    ax_full.grid(color="#dddddd", linewidth=0.8)
-    ax_full.legend(frameon=False)
-    ax_full.set_xlim(left=0, right=2_000_000)
-
-    if qppo:
-        xs, ys = zip(*qppo)
-        ax_short.plot(xs, ys, marker="o", linewidth=1.8, markersize=4, color=COLORS["QPPO/QRL short-trained"])
-    ax_short.axvline(25_000, color="#444444", linestyle="--", linewidth=1)
-    ax_short.set_title("Short-trained QPPO feasibility only")
-    ax_short.set_xlabel("Environment steps")
-    ax_short.set_ylabel("Evaluation reward")
-    ax_short.grid(color="#dddddd", linewidth=0.8)
-    ax_short.set_xlim(left=0, right=25_000)
-    ax_short.text(24_500, ax_short.get_ylim()[0], "25k-step limit", ha="right", va="bottom", fontsize=8)
-
-    fig.suptitle("Reward Curves: Completed Classical Training vs Short QPPO Feasibility", y=1.04)
+        ax.plot(xs, ys, marker="o", linewidth=1.8, markersize=3.4, label=agent, color=COLORS[agent])
+    ax.axhline(200, color="#333333", linestyle="--", linewidth=1, label="Solved threshold")
+    ax.set_title("Matched 100k Evaluation Reward")
+    ax.set_xlabel("Environment steps")
+    ax.set_ylabel("Evaluation reward")
+    ax.grid(color="#dddddd", linewidth=0.8)
+    ax.legend(frameon=False, ncols=2)
+    ax.set_xlim(left=0, right=100_000)
     save_fig(path)
     caption = (
-        "Use this as the main reward-trajectory figure. The left panel contains only completed "
-        "2M-step classical runs; the right panel isolates the 25k-step QPPO simulator feasibility run so it is not mistaken for a full fair benchmark."
+        "Use this as the main reward-trajectory figure. It contains only completed matched 100k-step runs for PPO, PPO-tiny, DQN, Quantum DQN, and QRL."
     )
     return filename, caption
 
 
 def plot_final_reward_comparison() -> tuple[str, str]:
-    filename = "fig_final_reward_full_classical_with_qppo_feasibility.png"
+    filename = "fig_final_reward_best_qrl_vs_classical_100k.png"
     path = OUT_DIR / filename
-    rows = read_csv(COMPUTE_CSV)
-    selected = [r for r in rows if r["agent"] in {"PPO", "PPO-tiny", "DQN", "QPPO/QRL short-trained"}]
-    labels = [r["agent"].replace(" short-trained", "\nshort-trained") for r in selected]
-    values = [as_float(r.get("final_reward")) or 0 for r in selected]
-    colors = [COLORS[r["agent"]] for r in selected]
-    hatches = ["" if r["category"] == "Full-training classical" else "//" for r in selected]
+    records = read_csv(AGGREGATE_CSV)
+    by_run: dict[tuple[str, str, str], list[tuple[float, float]]] = {}
+    for row in records:
+        if row.get("included_in_plots") != "yes" or row.get("metric_type") != "evaluation":
+            continue
+        agent = row.get("agent_label", "")
+        if agent not in {"PPO", "PPO-tiny", "DQN", "QRL"}:
+            continue
+        timestep = as_float(row.get("timestep"))
+        reward = as_float(row.get("evaluation_reward") or row.get("episode_reward"))
+        if timestep is None or reward is None:
+            continue
+        by_run.setdefault((agent, row.get("seed", ""), row.get("run_name", "")), []).append((timestep, reward))
+
+    final_by_agent: dict[str, list[float]] = {}
+    for (agent, _, _), points in by_run.items():
+        points.sort()
+        final_by_agent.setdefault(agent, []).append(points[-1][1])
+
+    labels = []
+    values = []
+    colors = []
+    for agent in ["PPO", "PPO-tiny", "DQN"]:
+        agent_values = final_by_agent.get(agent, [])
+        if agent_values:
+            labels.append(agent)
+            values.append(sum(agent_values) / len(agent_values))
+            colors.append(COLORS[agent])
+    qrl_values = final_by_agent.get("QRL", [])
+    if qrl_values:
+        labels.append("Best QRL")
+        values.append(max(qrl_values))
+        colors.append(COLORS["QRL"])
 
     fig, ax = plt.subplots(figsize=(8.2, 4.8))
     bars = ax.bar(labels, values, color=colors)
-    for bar, hatch, value in zip(bars, hatches, values):
-        bar.set_hatch(hatch)
+    for bar, value in zip(bars, values):
         ax.text(bar.get_x() + bar.get_width() / 2, value, format_value(value, 1), ha="center", va="bottom" if value >= 0 else "top", fontsize=9)
     ax.axhline(0, color="#333333", linewidth=0.9)
-    ax.set_title("Final Reward: Full Classical Results vs Short QPPO Feasibility")
+    ax.axhline(200, color="#333333", linestyle="--", linewidth=1)
+    ax.set_title("Final Reward: Best QRL vs Classical Baselines at 100k")
     ax.set_ylabel("Final evaluation reward")
     ax.grid(axis="y", color="#dddddd", linewidth=0.8)
     ax.set_axisbelow(True)
     save_fig(path)
     caption = (
-        "Use this for final reward comparison with care: PPO, PPO-tiny, and DQN are completed 2M-step classical runs, while QPPO is a separate 25k-step feasibility result marked with hatching."
+        "Use this for the requested bar-chart comparison: PPO, PPO-tiny, and DQN are seed means from the matched 100k cohort, and QRL is the best QRL seed from that same cohort."
     )
     return filename, caption
 
@@ -209,10 +225,7 @@ def plot_compute_metric(metric: str, filename: str, title: str, ylabel: str, log
     labels = [r["agent"].replace(" short-trained", "\nshort-trained").replace(" hardware inference", "\nhardware inference") for r in rows]
     values = [as_float(r.get(metric)) or 0 for r in rows]
     colors = [COLORS.get(r["agent"], "#666666") for r in rows]
-    hatches = [
-        "" if r["category"] == "Full-training classical" else ("//" if "Short-trained" in r["category"] else "xx")
-        for r in rows
-    ]
+    hatches = ["" if "classical" in r["category"].lower() else "//" for r in rows]
 
     fig, ax = plt.subplots(figsize=(9.2, 4.9))
     bars = ax.bar(labels, values, color=colors)
@@ -229,9 +242,9 @@ def plot_compute_metric(metric: str, filename: str, title: str, ylabel: str, log
     save_fig(path)
 
     captions = {
-        "SPS": "Use this to compare environment-training throughput. IBM inference is shown as zero because it has no environment-training SPS.",
-        "wall_clock_time_seconds": "Use this to compare measured wall-clock cost by category. The IBM bar is total script/job time, not the approximately 2-second dashboard QPU execution time.",
-        "circuit_evaluations": "Use this to show quantum execution overhead. Classical baselines have zero circuit evaluations, QPPO reports simulated circuit evaluations during short training, and IBM reports 5 circuits x 100 shots.",
+        "SPS": "Use this to compare environment-training throughput for the completed matched 100k LunarLander runs.",
+        "wall_clock_time_seconds": "Use this to compare measured wall-clock cost for the completed matched 100k LunarLander runs.",
+        "circuit_evaluations": "Use this to show quantum execution overhead for the matched training cohort. Classical baselines have zero circuit evaluations; quantum rows report simulator circuit evaluations.",
     }
     return filename, captions[metric]
 
@@ -305,7 +318,7 @@ def write_index(entries: list[tuple[str, str]]) -> None:
     lines = [
         "# Final Report Figures Index",
         "",
-        "This folder contains the curated figures recommended for the final report. QPPO/QRL figures are labeled as short-trained feasibility unless they refer only to parameter count; IBM figures are inference-only hardware feasibility.",
+        "This folder contains the curated figures recommended for the final report. Main training figures use only the completed matched 100k LunarLander cohort. IBM figures remain inference-only hardware feasibility.",
         "",
     ]
     for i, (filename, caption) in enumerate(entries, start=1):
@@ -322,24 +335,32 @@ def main() -> None:
         plot_compute_metric(
             "SPS",
             "fig_compute_sps_full_classical_vs_qppo_short.png",
-            "SPS: Full Classical Training vs Short QPPO Feasibility",
+            "SPS: Matched 100k LunarLander Runs",
             "Steps per second",
         ),
         plot_compute_metric(
             "wall_clock_time_seconds",
             "fig_compute_wall_clock_by_result_category.png",
-            "Wall-Clock Cost by Result Category",
+            "Wall-Clock Cost: Matched 100k LunarLander Runs",
             "Seconds",
         ),
         plot_compute_metric(
             "circuit_evaluations",
             "fig_compute_circuit_evaluations_and_shots.png",
-            "Circuit Evaluations: Simulated QPPO and IBM Inference",
+            "Circuit Evaluations: Matched Quantum Training Runs",
             "Circuit evaluations / shots",
             log_scale=True,
         ),
         plot_ibm_agreement_table(),
     ]
+    shutil.copy2(
+        OUT_DIR / "fig_reward_curves_matched_100k_all_algorithms.png",
+        OUT_DIR / "fig_reward_curves_classical_full_and_qppo_short.png",
+    )
+    shutil.copy2(
+        OUT_DIR / "fig_final_reward_best_qrl_vs_classical_100k.png",
+        OUT_DIR / "fig_final_reward_full_classical_with_qppo_feasibility.png",
+    )
     write_index(entries)
     shutil.copy2(COMPUTE_CSV, OUT_DIR / "compute_cost_comparison.csv")
     shutil.copy2(PARAM_CSV, OUT_DIR / "parameter_count_comparison.csv")

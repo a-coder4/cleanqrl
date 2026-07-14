@@ -38,6 +38,10 @@ CSV_COLUMNS = [
     "exclusion_reason",
 ]
 
+MAIN_COMPARISON_TIMESTEPS = 100_000
+MAIN_COMPARISON_SEEDS = {0, 1, 2}
+MAIN_COMPARISON_AGENTS = set(AGENT_LABELS)
+
 
 def load_yaml(path):
     with open(path, "r") as f:
@@ -122,6 +126,30 @@ def run_completion_status(run):
     return not failures, "; ".join(failures)
 
 
+def main_comparison_status(run):
+    config = run["config"]
+    agent = str(config.get("agent", ""))
+    try:
+        seed = int(config.get("seed"))
+    except (TypeError, ValueError):
+        seed = None
+    try:
+        total_timesteps = int(config.get("total_timesteps", 0) or 0)
+    except (TypeError, ValueError):
+        total_timesteps = 0
+
+    failures = []
+    if agent not in MAIN_COMPARISON_AGENTS:
+        failures.append(f"agent {agent!r} is outside the matched comparison cohort")
+    if seed not in MAIN_COMPARISON_SEEDS:
+        failures.append(f"seed {seed!r} is outside the matched comparison seed set")
+    if total_timesteps != MAIN_COMPARISON_TIMESTEPS:
+        failures.append(
+            f"training budget {total_timesteps} does not match {MAIN_COMPARISON_TIMESTEPS}"
+        )
+    return not failures, "; ".join(failures)
+
+
 def value_or_blank(value):
     if value is None:
         return ""
@@ -135,6 +163,10 @@ def aggregate_rows(runs):
     for run in runs:
         config = run["config"]
         complete, exclusion_reason = run_completion_status(run)
+        in_scope, scope_reason = main_comparison_status(run)
+        include_in_plots = complete and in_scope
+        if not include_in_plots:
+            exclusion_reason = exclusion_reason if not complete else scope_reason
         agent = str(config.get("agent", ""))
         seed = config.get("seed", "")
         wall_clock_pairs = [
@@ -189,8 +221,8 @@ def aggregate_rows(runs):
                     "SPS": value_or_blank(sps),
                     "wall_clock_time": value_or_blank(wall_clock_time),
                     "circuit_evaluations": value_or_blank(record.get("circuit_evaluations")),
-                    "included_in_plots": "yes" if complete else "no",
-                    "exclusion_reason": "" if complete else exclusion_reason,
+                    "included_in_plots": "yes" if include_in_plots else "no",
+                    "exclusion_reason": "" if include_in_plots else exclusion_reason,
                 }
             )
     return rows
@@ -274,6 +306,7 @@ def incomplete_quantum_budgets(rows):
         for row in rows
         if row.get("included_in_plots") == "no"
         and row.get("agent_label") in quantum_labels
+        and "incomplete" in row.get("exclusion_reason", "")
     ]
     max_timestep = max(
         [
@@ -295,22 +328,35 @@ def incomplete_quantum_budgets(rows):
 
 
 def final_rewards(rows, last_n=100):
-    by_run = defaultdict(list)
+    train_by_run = defaultdict(list)
+    eval_by_run = defaultdict(list)
     for row in rows:
         if row.get("included_in_plots") != "yes":
             continue
-        if row["metric_type"] != "train_episode":
-            continue
-        reward = numeric(row["episode_reward"])
         timestep = numeric(row["timestep"])
-        if reward is None or timestep is None:
+        if timestep is None:
             continue
-        by_run[(row["agent_label"], row["seed"], row["run_name"])].append((timestep, reward))
+        key = (row["agent_label"], row["seed"], row["run_name"])
+        if row["metric_type"] == "evaluation":
+            reward = numeric(row["evaluation_reward"])
+            if reward is not None:
+                eval_by_run[key].append((timestep, reward))
+        elif row["metric_type"] == "train_episode":
+            reward = numeric(row["episode_reward"])
+            if reward is not None:
+                train_by_run[key].append((timestep, reward))
 
     values_by_agent = defaultdict(list)
-    for (agent_label, _, _), values in by_run.items():
-        values.sort(key=lambda item: item[0])
-        tail = [reward for _, reward in values[-last_n:]]
+    for key in set(train_by_run) | set(eval_by_run):
+        agent_label, _, _ = key
+        eval_values = eval_by_run.get(key, [])
+        if eval_values:
+            eval_values.sort(key=lambda item: item[0])
+            values_by_agent[agent_label].append(eval_values[-1][1])
+            continue
+        train_values = train_by_run.get(key, [])
+        train_values.sort(key=lambda item: item[0])
+        tail = [reward for _, reward in train_values[-last_n:]]
         if tail:
             values_by_agent[agent_label].append(sum(tail) / len(tail))
     return values_by_agent
@@ -341,10 +387,19 @@ def compute_cost(rows):
         key = (row["agent_label"], row["seed"], row["run_name"])
         current = by_run.setdefault(
             key,
-            {"max_sps": None, "max_wall_clock_time": None, "max_circuit_evaluations": None},
+            {
+                "latest_sps": None,
+                "latest_sps_timestep": -1,
+                "max_wall_clock_time": None,
+                "max_circuit_evaluations": None,
+            },
         )
+        timestep = numeric(row["timestep"])
+        sps = numeric(row["SPS"])
+        if sps is not None and timestep is not None and timestep >= current["latest_sps_timestep"]:
+            current["latest_sps"] = sps
+            current["latest_sps_timestep"] = timestep
         for source_key, target_key in [
-            ("SPS", "max_sps"),
             ("wall_clock_time", "max_wall_clock_time"),
             ("circuit_evaluations", "max_circuit_evaluations"),
         ]:
@@ -363,10 +418,11 @@ def mean(values):
 
 
 def write_summary_table(rows, output_path):
-    final_by_agent = final_rewards(rows)
-    cost_by_agent = compute_cost(rows)
-    success_by_agent = success_points(rows)
     early_step_budget, time_budget = incomplete_quantum_budgets(rows)
+    run_stats = [stat for stat in run_level_stats(rows) if stat["included"]]
+    stats_by_agent = defaultdict(list)
+    for stat in run_stats:
+        stats_by_agent[stat["agent_label"]].append(stat)
     excluded_runs = {}
     for row in rows:
         if row.get("included_in_plots") == "no":
@@ -377,32 +433,29 @@ def write_summary_table(rows, output_path):
         "",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "",
-        f"Included complete runs: {len({row['run_name'] for row in rows if row.get('included_in_plots') == 'yes'})}",
-        f"Excluded incomplete runs: {len(excluded_runs)}",
-        f"Early-step matched budget: {format_number(early_step_budget)} environment interactions",
-        f"Time-budget comparison: {format_duration(time_budget)}",
+        f"Main matched budget: {MAIN_COMPARISON_TIMESTEPS:,} environment interactions",
+        f"Main seed set: {', '.join(str(seed) for seed in sorted(MAIN_COMPARISON_SEEDS))}",
+        f"Included matched runs: {len({row['run_name'] for row in rows if row.get('included_in_plots') == 'yes'})}",
+        f"Excluded out-of-scope or incomplete runs: {len(excluded_runs)}",
         "",
         "| Agent | Runs | Final Reward Mean | Final Reward Min | Final Reward Max | Final Success Rate | Mean SPS | Mean Wall-Clock Time | Mean Circuit Evaluations |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    agents = sorted(set(list(final_by_agent) + list(cost_by_agent) + list(success_by_agent)))
+    agents = sorted(stats_by_agent)
     for agent in agents:
-        final_values = final_by_agent.get(agent, [])
-        final_success = None
-        if success_by_agent.get(agent):
-            final_success = success_by_agent[agent][-1][1]
-        costs = cost_by_agent.get(agent, [])
-        mean_sps = mean([entry["max_sps"] for entry in costs])
-        mean_wall = mean([entry["max_wall_clock_time"] for entry in costs])
-        mean_circuits = mean([entry["max_circuit_evaluations"] for entry in costs])
+        stats = stats_by_agent[agent]
+        final_values = [stat["final_reward"] for stat in stats]
+        mean_sps = mean([stat["SPS"] for stat in stats])
+        mean_wall = mean([stat["wall_clock_time"] for stat in stats])
+        mean_circuits = mean([stat["circuit_evaluations"] for stat in stats])
         lines.append(
             "| {agent} | {runs} | {final_mean} | {final_min} | {final_max} | {success} | {sps} | {wall} | {circuits} |".format(
                 agent=agent,
-                runs=len(final_values) or len(costs),
+                runs=len(stats),
                 final_mean=format_number(mean(final_values)),
                 final_min=format_number(min(final_values) if final_values else None),
                 final_max=format_number(max(final_values) if final_values else None),
-                success=format_number(final_success),
+                success=format_number(mean([stat["success_rate"] for stat in stats])),
                 sps=format_number(mean_sps),
                 wall=format_number(mean_wall),
                 circuits=format_number(mean_circuits),
@@ -415,11 +468,18 @@ def write_summary_table(rows, output_path):
     lines.extend(
         [
             "",
-            "## Supplemental Matched-Budget Comparisons",
+            "## Supplemental Notes",
             "",
-            "The early-step matched comparison and time-budget comparison are supplemental diagnostics. They include incomplete quantum runs and truncate classical baselines to the same budget. They are not the main full-training final-performance result.",
+            "The main plots and table use only completed runs from the matched 100,000-step, seeds 0-2 cohort. Older full-training or partial exploratory runs remain in the aggregate CSV with `included_in_plots == no` for transparency.",
         ]
     )
+    if early_step_budget is not None:
+        lines.extend(
+            [
+                "",
+                f"Older incomplete quantum diagnostics reached up to {format_number(early_step_budget)} environment interactions after about {format_duration(time_budget)}. They are retained only as historical compute-feasibility context.",
+            ]
+        )
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -436,7 +496,8 @@ def run_level_stats(rows):
         evals = []
         max_step = 0
         max_wall = None
-        max_sps = None
+        latest_sps = None
+        latest_sps_timestep = -1
         max_circuit = None
         for row in run_rows:
             timestep = numeric(row["timestep"])
@@ -447,8 +508,9 @@ def run_level_stats(rows):
                 max_step = max(max_step, int(timestep))
             if wall is not None:
                 max_wall = wall if max_wall is None else max(max_wall, wall)
-            if sps is not None:
-                max_sps = sps if max_sps is None else max(max_sps, sps)
+            if sps is not None and timestep is not None and timestep >= latest_sps_timestep:
+                latest_sps = sps
+                latest_sps_timestep = timestep
             if circuit is not None:
                 max_circuit = circuit if max_circuit is None else max(max_circuit, circuit)
             if row["metric_type"] == "train_episode" and row["episode_reward"] != "":
@@ -478,7 +540,7 @@ def run_level_stats(rows):
                 "success_rate": success_rate,
                 "timesteps": max_step,
                 "wall_clock_time": max_wall,
-                "SPS": max_sps,
+                "SPS": latest_sps,
                 "circuit_evaluations": max_circuit,
             }
         )
@@ -503,7 +565,7 @@ def aggregate_complete_stats(run_stats):
                 "wall_clock_time": mean([stat["wall_clock_time"] for stat in stats]),
                 "SPS": mean([stat["SPS"] for stat in stats]),
                 "circuit_evaluations": mean([stat["circuit_evaluations"] for stat in stats]),
-                "status": "Complete full-training run" if len(stats) == 1 else "Complete full-training runs",
+                "status": "Complete matched-budget run" if len(stats) == 1 else "Complete matched-budget runs",
             }
         )
     return rows
@@ -541,43 +603,35 @@ def write_report_section(rows, output_path, plots_dir):
     lines = [
         "# Standardized LunarLander-v3 Comparison Results",
         "",
-        "This section reports the standardized LunarLander-v3 comparison after enforcing a common environment, preprocessing path, action space, training budget, seed protocol, evaluation cadence, and logging schema. Final-performance conclusions below use **only completed runs** that reached the full 2,000,000 environment interactions and produced the required evaluation/checkpoint outputs at every 100,000-step interval. Incomplete runs are retained in the aggregate CSV for transparency, but are excluded from the main final-performance plots and summary statistics.",
+        f"This section reports the standardized LunarLander-v3 comparison after enforcing a common environment, preprocessing path, action space, training budget, seed protocol, evaluation cadence, and logging schema. Main conclusions below use **only completed runs** from the matched {MAIN_COMPARISON_TIMESTEPS:,}-step cohort with seeds {', '.join(str(seed) for seed in sorted(MAIN_COMPARISON_SEEDS))}. Older full-training or partial exploratory runs are retained in the aggregate CSV for transparency, but are excluded from the main plots and summary statistics.",
         "",
-        "## Completed-Run Results",
+        "## Matched-Budget Results",
         "",
-        "The completed-run comparison should be treated as the primary result. The classical agents that completed the standardized protocol show strong final evaluation performance for PPO and DQN, while PPO-tiny remains substantially weaker. These results are shown in:",
+        "The matched-budget comparison should be treated as the primary result because every plotted agent uses the same 100,000 environment-interaction budget and the same three seeds.",
         "",
-        f"![Full-training reward curve]({plots_dir}/reward_vs_timesteps.png)",
+        f"![Matched reward curve]({plots_dir}/reward_vs_timesteps.png)",
         "",
-        "*Figure: Full-training reward vs environment interactions for complete standardized runs only. Curves show rolling mean episode reward; incomplete quantum runs are excluded from this main plot.*",
+        "*Figure: Reward vs environment interactions for the completed matched-budget runs only. Curves show rolling mean episode reward.*",
         "",
         f"![Final reward distribution]({plots_dir}/final_reward_distribution.png)",
         "",
-        "*Figure: Final reward distribution by agent for complete standardized runs only. This is the appropriate plot for full-training final-performance conclusions.*",
+        "*Figure: Final evaluation reward distribution by agent for completed matched-budget runs.*",
+        "",
+        f"![Best QRL vs classical]({plots_dir}/best_qrl_vs_classical_final_reward.png)",
+        "",
+        "*Figure: Final reward bar chart comparing the best QRL run against the mean PPO, PPO-tiny, and DQN baselines from the same 100,000-step cohort.*",
         "",
         f"![Success rate]({plots_dir}/success_rate.png)",
         "",
-        "*Figure: Success rate over training for complete standardized runs only. Success is defined by the configured LunarLander threshold of episode reward >= 200.*",
+        "*Figure: Success rate over training for completed matched-budget runs. Success is defined by the configured LunarLander threshold of episode reward >= 200.*",
         "",
-        "## Supplemental Matched-Budget Diagnostics",
-        "",
-        f"The quantum DQN runs did not complete the full 2,000,000-interaction protocol. The longest incomplete quantum DQN run reached approximately **{format_number(early_step_budget)}** environment interactions after about **{format_duration(time_budget)}** of wall-clock time. Because these runs are incomplete, they are **not** used for main final-performance claims.",
-        "",
-        "To make the partial quantum results interpretable without overstating them, two supplemental comparisons are provided:",
-        "",
-        f"![Early-step matched comparison]({plots_dir}/early_step_matched_comparison.png)",
-        "",
-        "*Figure: Early-step matched comparison. Classical baselines are truncated to the same maximum environment-step budget reached by the incomplete quantum runs. This plot is a diagnostic of early-training behavior, not a final-performance result.*",
-        "",
-        f"![Time-budget comparison]({plots_dir}/time_budget_comparison.png)",
-        "",
-        "*Figure: Time-budget comparison. Classical baselines are truncated to the same wall-clock budget consumed by the incomplete quantum runs. This plot is a diagnostic of practical compute efficiency, not a final-performance result.*",
+        "## Compute Diagnostics",
         "",
         f"![Compute cost comparison]({plots_dir}/compute_cost_comparison.png)",
         "",
-        "*Figure: Compute cost comparison for complete runs where available. Quantum circuit evaluation counts are reported separately because simulator overhead is not captured by environment interactions alone.*",
+        "*Figure: Compute cost comparison for completed matched-budget runs. Quantum circuit evaluation counts are reported separately because simulator overhead is not captured by environment interactions alone.*",
         "",
-        "These supplemental plots support the practical conclusion that simulated quantum RL has major overhead in this setup. In particular, quantum DQN is computationally infeasible under the current project time budget: it fails to reach the full standardized training horizon in a reasonable time, while classical baselines complete the same nominal environment-interaction budget quickly enough to support full-seed evaluation.",
+        "The matched-budget results support the practical conclusion that simulated quantum RL has major overhead in this setup. The quantum agents complete the same environment-interaction budget, but at much lower throughput and with substantial circuit-evaluation cost.",
         "",
         "## Run Status Table",
         "",
@@ -669,13 +723,61 @@ def generate_plots(rows, output_dir, rolling_window):
     values = [final_by_agent[agent] for agent in agents]
     plt.figure(figsize=(10, 6))
     if values:
-        plt.boxplot(values, tick_labels=agents, showmeans=True)
+        plt.boxplot(values, labels=agents, showmeans=True)
     plt.axhline(200, color="black", linestyle="--", linewidth=1)
     plt.ylabel("Final reward, last-100 episode mean per run")
     plt.title("Final Reward Distribution by Agent")
     plt.xticks(rotation=20, ha="right")
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "final_reward_distribution.png"), dpi=180)
+    plt.close()
+
+    run_stats = [stat for stat in run_level_stats(rows) if stat["included"]]
+    stats_by_agent = defaultdict(list)
+    for stat in run_stats:
+        stats_by_agent[stat["agent_label"]].append(stat)
+    bar_labels = []
+    bar_values = []
+    bar_colors = []
+    color_by_agent = {
+        "PPO": "#4169e1",
+        "PPO-tiny": "#00a676",
+        "DQN": "#d95f02",
+        "QRL": "#7b3294",
+    }
+    for agent in ["PPO", "PPO-tiny", "DQN"]:
+        values = [stat["final_reward"] for stat in stats_by_agent.get(agent, [])]
+        if values:
+            bar_labels.append(agent)
+            bar_values.append(mean(values))
+            bar_colors.append(color_by_agent[agent])
+    qrl_values = [stat["final_reward"] for stat in stats_by_agent.get("QRL", [])]
+    if qrl_values:
+        bar_labels.append("Best QRL")
+        bar_values.append(max(qrl_values))
+        bar_colors.append(color_by_agent["QRL"])
+    plt.figure(figsize=(8.5, 5.2))
+    bars = plt.bar(bar_labels, bar_values, color=bar_colors)
+    plt.axhline(0, color="#333333", linewidth=0.9)
+    plt.axhline(200, color="black", linestyle="--", linewidth=1, label="Solved threshold")
+    plt.ylabel("Final evaluation reward")
+    plt.title("Best QRL vs Classical Baselines at 100k Steps")
+    plt.grid(axis="y", color="#dddddd", linewidth=0.8)
+    plt.gca().set_axisbelow(True)
+    for bar, value in zip(bars, bar_values):
+        va = "bottom" if value >= 0 else "top"
+        plt.text(
+            bar.get_x() + bar.get_width() / 2,
+            value,
+            format_number(value),
+            ha="center",
+            va=va,
+            fontsize=9,
+        )
+    if bar_labels:
+        plt.legend(frameon=False)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "best_qrl_vs_classical_final_reward.png"), dpi=180)
     plt.close()
 
     success_grouped = success_points(rows)
@@ -696,7 +798,7 @@ def generate_plots(rows, output_dir, rolling_window):
 
     cost_by_agent = compute_cost(rows)
     agents = sorted(cost_by_agent)
-    mean_sps_values = [mean([entry["max_sps"] for entry in cost_by_agent[agent]]) or 0 for agent in agents]
+    mean_sps_values = [mean([entry["latest_sps"] for entry in cost_by_agent[agent]]) or 0 for agent in agents]
     mean_circuit_values = [
         mean([entry["max_circuit_evaluations"] for entry in cost_by_agent[agent]]) or 0
         for agent in agents
