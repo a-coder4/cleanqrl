@@ -3,7 +3,7 @@
 This flat folder gathers the newest matched-100k LunarLander data and figures available in this repository.
 
 - Source Git ref: `origin/main`
-- Source commit: `cad3d6f162fd0c5716d8f4e47b4db3b71f50e393`
+- Source commit: `253f5cd64879b6dc721c2be2cddeb01de8c2b96a`
 - Protocol: 100,000 environment interactions per run
 - Models: PPO, PPO-tiny, DQN, QRL (the QPPO/QRL hybrid), and Quantum DQN
 - Seeds: 0, 1, and 2 for every model
@@ -20,7 +20,7 @@ This flat folder gathers the newest matched-100k LunarLander data and figures av
 ## Figures
 
 - `01_reward_curves_matched_100k.png`: rolling-mean training reward curves for all five models.
-- `01b_final_evaluation_rewards_at_100k_all_seeds.png`: all three final evaluation points per model at 100k.
+- `01b_final_evaluation_rewards_at_100k_all_seeds.png`: categorical comparison of all three final evaluation points per model at 100k.
 - `02_final_reward_comparison.png`: final-reward distribution across the three seeds per model.
 - `03_best_qrl_vs_classical.png`: best QRL seed versus classical model means.
 - `04_success_rate_comparison.png`: success rate over environment interactions.
@@ -33,4 +33,6 @@ This flat folder gathers the newest matched-100k LunarLander data and figures av
 
 `QRL` is the repository's label for the QPPO/QRL hybrid (`qppo_hybrid_configC`). Final evaluation success is 0 for all 15 runs at 100k steps. The success-rate curve can still contain isolated successful training episodes before the final evaluation. The final-reward distribution uses each run's last-100 training-episode mean, while the seed report and best-QRL bar use the final evaluation reward at 100k.
 
-`gather_bundle.rb` reproduces the repository-sourced CSV and figure files from the source Git ref and validates the five-model, three-seed, 100k protocol before writing outputs.
+**Figure 2 caption:** Final LunarLander-v3 evaluation rewards at 100k steps for all three seeds of each matched model. Each point represents one seed; the dashed line marks the solved threshold.
+
+`gather_bundle.rb` reproduces the repository-sourced CSV and figure files from the source Git ref, regenerates Figure 2 with `regenerate_figure_01b.cjs`, and validates the five-model, three-seed, 100k protocol before writing outputs.

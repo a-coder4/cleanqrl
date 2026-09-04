@@ -14,8 +14,6 @@ EXPECTED_SEEDS = %w[0 1 2].freeze
 FIGURES = {
   "01_reward_curves_matched_100k.png" =>
     "lunarlander_comparison_plots/reward_vs_timesteps.png",
-  "01b_final_evaluation_rewards_at_100k_all_seeds.png" =>
-    "final_report_figures/fig_reward_curves_matched_100k_all_algorithms.png",
   "02_final_reward_comparison.png" =>
     "lunarlander_comparison_plots/final_reward_distribution.png",
   "03_best_qrl_vs_classical.png" =>
@@ -116,6 +114,18 @@ FIGURES.each do |destination, source|
   File.binwrite(File.join(OUTPUT_DIR, destination), git_blob(source))
 end
 
+node_modules = ENV.fetch(
+  "CLEANQRL_NODE_MODULES",
+  File.join(Dir.home, ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules")
+)
+plot_stdout, plot_stderr, plot_status = Open3.capture3(
+  { "NODE_PATH" => node_modules },
+  "node",
+  File.join(OUTPUT_DIR, "regenerate_figure_01b.cjs")
+)
+abort(plot_stderr) unless plot_status.success?
+puts plot_stdout
+
 readme = <<~MARKDOWN
   # LunarLander matched-100k asset bundle
 
@@ -139,7 +149,7 @@ readme = <<~MARKDOWN
   ## Figures
 
   - `01_reward_curves_matched_100k.png`: rolling-mean training reward curves for all five models.
-  - `01b_final_evaluation_rewards_at_100k_all_seeds.png`: all three final evaluation points per model at 100k.
+  - `01b_final_evaluation_rewards_at_100k_all_seeds.png`: categorical comparison of all three final evaluation points per model at 100k.
   - `02_final_reward_comparison.png`: final-reward distribution across the three seeds per model.
   - `03_best_qrl_vs_classical.png`: best QRL seed versus classical model means.
   - `04_success_rate_comparison.png`: success rate over environment interactions.
@@ -152,7 +162,9 @@ readme = <<~MARKDOWN
 
   `QRL` is the repository's label for the QPPO/QRL hybrid (`qppo_hybrid_configC`). Final evaluation success is 0 for all 15 runs at 100k steps. The success-rate curve can still contain isolated successful training episodes before the final evaluation. The final-reward distribution uses each run's last-100 training-episode mean, while the seed report and best-QRL bar use the final evaluation reward at 100k.
 
-  `gather_bundle.rb` reproduces the repository-sourced CSV and figure files from the source Git ref and validates the five-model, three-seed, 100k protocol before writing outputs.
+  **Figure 2 caption:** Final LunarLander-v3 evaluation rewards at 100k steps for all three seeds of each matched model. Each point represents one seed; the dashed line marks the solved threshold.
+
+  `gather_bundle.rb` reproduces the repository-sourced CSV and figure files from the source Git ref, regenerates Figure 2 with `regenerate_figure_01b.cjs`, and validates the five-model, three-seed, 100k protocol before writing outputs.
 MARKDOWN
 File.write(File.join(OUTPUT_DIR, "README.md"), readme)
 

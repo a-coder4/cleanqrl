@@ -14,6 +14,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 
 OUT_DIR = Path("final_report_figures")
@@ -32,7 +33,9 @@ COLORS = {
     "QPPO/QRL short-trained": "#7b3294",
     "IBM QPPO hardware inference": "#595959",
 }
-AGENT_ORDER = ["PPO", "PPO-tiny", "DQN", "Quantum DQN", "QRL"]
+AGENT_ORDER = ["PPO", "PPO-tiny", "DQN", "QRL", "Quantum DQN"]
+SEED_OFFSETS = {0: -0.10, 1: 0.00, 2: 0.10}
+SEED_MARKERS = {0: "o", 1: "s", 2: "^"}
 
 
 def as_float(value: object) -> float | None:
@@ -81,9 +84,9 @@ def save_fig(path: Path) -> None:
     plt.close()
 
 
-def aggregate_matched_evaluations() -> dict[str, list[tuple[float, float]]]:
+def matched_final_evaluations() -> dict[str, list[tuple[int, float]]]:
     records = read_csv(AGGREGATE_CSV)
-    series: dict[str, list[tuple[float, float]]] = {}
+    series: dict[str, list[tuple[int, float]]] = {}
     for row in records:
         if row.get("included_in_plots") != "yes":
             continue
@@ -93,12 +96,19 @@ def aggregate_matched_evaluations() -> dict[str, list[tuple[float, float]]]:
         if agent not in set(AGENT_ORDER):
             continue
         timestep = as_float(row.get("timestep"))
+        seed = int(row.get("seed", -1))
         reward = as_float(row.get("evaluation_reward") or row.get("episode_reward"))
-        if timestep is None or reward is None:
+        if timestep != 100_000 or seed not in SEED_OFFSETS or reward is None:
             continue
-        series.setdefault(agent, []).append((timestep, reward))
-    for values in series.values():
-        values.sort()
+        series.setdefault(agent, []).append((seed, reward))
+
+    if set(series) != set(AGENT_ORDER):
+        raise ValueError(f"Expected matched models {AGENT_ORDER}, found {sorted(series)}")
+    for agent in AGENT_ORDER:
+        series[agent].sort()
+        seeds = [seed for seed, _ in series[agent]]
+        if seeds != [0, 1, 2]:
+            raise ValueError(f"Expected seeds [0, 1, 2] for {agent}, found {seeds}")
     return series
 
 
@@ -119,25 +129,63 @@ def qppo_short_evaluations() -> list[tuple[float, float]]:
 def plot_reward_comparison() -> tuple[str, str]:
     filename = "fig_reward_curves_matched_100k_all_algorithms.png"
     path = OUT_DIR / filename
-    series = aggregate_matched_evaluations()
+    series = matched_final_evaluations()
 
-    fig, ax = plt.subplots(figsize=(8.8, 4.8))
-    for agent in AGENT_ORDER:
-        points = series.get(agent, [])
-        if not points:
-            continue
-        xs, ys = zip(*points)
-        ax.plot(xs, ys, marker="o", linewidth=1.8, markersize=3.4, label=agent, color=COLORS[agent])
-    ax.axhline(200, color="#333333", linestyle="--", linewidth=1, label="Solved threshold")
-    ax.set_title("Matched 100k Evaluation Reward")
-    ax.set_xlabel("Environment steps")
-    ax.set_ylabel("Evaluation reward")
-    ax.grid(color="#dddddd", linewidth=0.8)
-    ax.legend(frameon=False, ncols=2)
-    ax.set_xlim(left=0, right=100_000)
+    fig, ax = plt.subplots(figsize=(7.16, 4.45))
+    plotted_points = 0
+    for model_position, agent in enumerate(AGENT_ORDER):
+        for seed, reward in series[agent]:
+            ax.scatter(
+                model_position + SEED_OFFSETS[seed],
+                reward,
+                color=COLORS[agent],
+                marker=SEED_MARKERS[seed],
+                s=58,
+                edgecolors="white",
+                linewidths=0.7,
+                zorder=3,
+            )
+            plotted_points += 1
+    if plotted_points != 15:
+        raise ValueError(f"Expected 15 final evaluation points, plotted {plotted_points}")
+
+    ax.axhline(200, color="black", linestyle="--", linewidth=1.1, zorder=2)
+    ax.set_xticks(range(len(AGENT_ORDER)), AGENT_ORDER)
+    ax.set_xlim(-0.5, len(AGENT_ORDER) - 0.5)
+    ax.set_title("Matched 100k Final Evaluation Reward")
+    ax.set_xlabel("Agent")
+    ax.set_ylabel("Final evaluation reward")
+    ax.grid(axis="y", color="#dddddd", linewidth=0.8)
+    ax.set_axisbelow(True)
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker=SEED_MARKERS[seed],
+            color="none",
+            markerfacecolor="#666666",
+            markeredgecolor="white",
+            markeredgewidth=0.7,
+            markersize=7,
+            label=f"Seed {seed}",
+        )
+        for seed in sorted(SEED_MARKERS)
+    ]
+    legend_handles.append(
+        Line2D(
+            [0],
+            [0],
+            color="black",
+            linestyle="--",
+            linewidth=1.1,
+            label="Solved threshold",
+        )
+    )
+    ax.legend(handles=legend_handles, frameon=False, ncols=2, loc="lower left")
     save_fig(path)
     caption = (
-        "Use this as the main reward-trajectory figure. It contains only completed matched 100k-step runs for PPO, PPO-tiny, DQN, Quantum DQN, and QRL."
+        "Final LunarLander-v3 evaluation rewards at 100k steps for all three seeds of each "
+        "matched model. Each point represents one seed; the dashed line marks the solved threshold."
     )
     return filename, caption
 
