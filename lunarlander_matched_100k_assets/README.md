@@ -3,7 +3,7 @@
 This flat folder gathers the newest matched-100k LunarLander data and figures available in this repository.
 
 - Source Git ref: `origin/main`
-- Source commit: `253f5cd64879b6dc721c2be2cddeb01de8c2b96a`
+- Source commit: `2040fcbf9b8956d20091128754df056055ed669b`
 - Protocol: 100,000 environment interactions per run
 - Models: PPO, PPO-tiny, DQN, QRL (the QPPO/QRL hybrid), and Quantum DQN
 - Seeds: 0, 1, and 2 for every model
@@ -23,7 +23,7 @@ This flat folder gathers the newest matched-100k LunarLander data and figures av
 - `01b_final_evaluation_rewards_at_100k_all_seeds.png`: categorical comparison of all three final evaluation points per model at 100k.
 - `02_final_reward_comparison.png`: final-reward distribution across the three seeds per model.
 - `03_best_qrl_vs_classical.png`: best QRL seed versus classical model means.
-- `04_success_rate_comparison.png`: success rate over environment interactions.
+- `04_success_rate_comparison.png`: pooled training-episode success rate in fixed 10,000-interaction windows across all three seeds per model.
 - `05_compute_cost_combined.png`: combined SPS and circuit-evaluation comparison.
 - `05a_training_time_wall_clock.png`: mean wall-clock training time.
 - `05b_training_throughput_sps.png`: mean steps per second.
@@ -35,4 +35,6 @@ This flat folder gathers the newest matched-100k LunarLander data and figures av
 
 **Figure 2 caption:** Final LunarLander-v3 evaluation rewards at 100k steps for all three seeds of each matched model. Each point represents one seed; the dashed line marks the solved threshold.
 
-`gather_bundle.rb` reproduces the repository-sourced CSV and figure files from the source Git ref, regenerates Figure 2 with `regenerate_figure_01b.cjs`, and validates the five-model, three-seed, 100k protocol before writing outputs.
+**Success-rate caption:** Training episode success rate for the matched 100k LunarLander-v3 runs, aggregated into 10,000-interaction windows across three seeds per model. Successful episodes were rare and isolated; all 15 final evaluations at 100k steps had zero success.
+
+`gather_bundle.rb` reproduces the repository-sourced CSV and figure files from the source Git ref, regenerates the categorical final-reward and binned success-rate figures, and validates the five-model, three-seed, 100k protocol before writing outputs.

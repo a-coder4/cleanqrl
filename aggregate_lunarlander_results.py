@@ -41,6 +41,22 @@ CSV_COLUMNS = [
 MAIN_COMPARISON_TIMESTEPS = 100_000
 MAIN_COMPARISON_SEEDS = {0, 1, 2}
 MAIN_COMPARISON_AGENTS = set(AGENT_LABELS)
+PLOT_AGENT_ORDER = ["DQN", "PPO", "PPO-tiny", "QRL", "Quantum DQN"]
+PLOT_AGENT_COLORS = {
+    "PPO": "#4169e1",
+    "PPO-tiny": "#00a676",
+    "DQN": "#d95f02",
+    "QRL": "#7b3294",
+    "Quantum DQN": "#b35806",
+}
+SUCCESS_BIN_SIZE = 10_000
+PLOT_AGENT_OFFSETS = {
+    "DQN": -1_400,
+    "PPO": -700,
+    "PPO-tiny": 0,
+    "QRL": 700,
+    "Quantum DQN": 1_400,
+}
 
 
 def load_yaml(path):
@@ -362,21 +378,60 @@ def final_rewards(rows, last_n=100):
     return values_by_agent
 
 
-def success_points(rows):
-    grouped = defaultdict(list)
+def binned_training_success(rows, bin_size=SUCCESS_BIN_SIZE):
+    bin_count = math.ceil(MAIN_COMPARISON_TIMESTEPS / bin_size)
+    counts = {
+        agent: [
+            {"successes": 0, "episodes": 0, "seeds": set()}
+            for _ in range(bin_count)
+        ]
+        for agent in PLOT_AGENT_ORDER
+    }
     for row in rows:
         if row.get("included_in_plots") != "yes":
             continue
-        if row["metric_type"] not in {"train_episode", "evaluation"}:
+        if row["metric_type"] != "train_episode":
             continue
         timestep = numeric(row["timestep"])
-        success_rate = numeric(row["success_rate"])
-        if timestep is None or success_rate is None:
+        success = numeric(row["success_rate"])
+        agent = row["agent_label"]
+        seed = int(row["seed"])
+        if timestep is None or success is None or agent not in counts:
             continue
-        grouped[row["agent_label"]].append((timestep, success_rate))
-    for values in grouped.values():
-        values.sort(key=lambda item: item[0])
-    return grouped
+        if success not in {0.0, 1.0}:
+            raise ValueError(
+                f"Expected binary training success for {agent} seed {seed}, found {success}"
+            )
+        if timestep < 0 or timestep > MAIN_COMPARISON_TIMESTEPS:
+            continue
+        bin_index = min(int(timestep // bin_size), bin_count - 1)
+        counts[agent][bin_index]["successes"] += int(success)
+        counts[agent][bin_index]["episodes"] += 1
+        counts[agent][bin_index]["seeds"].add(seed)
+
+    binned = {}
+    for agent in PLOT_AGENT_ORDER:
+        points = []
+        for bin_index, count in enumerate(counts[agent]):
+            episodes = count["episodes"]
+            rate = count["successes"] / episodes if episodes else math.nan
+            points.append(
+                {
+                    "center": bin_index * bin_size + bin_size / 2,
+                    "rate": rate,
+                    "successes": count["successes"],
+                    "episodes": episodes,
+                    "seeds": count["seeds"],
+                }
+            )
+        observed_seeds = set().union(*(point["seeds"] for point in points))
+        if observed_seeds != MAIN_COMPARISON_SEEDS:
+            raise ValueError(
+                f"Expected seeds {sorted(MAIN_COMPARISON_SEEDS)} for {agent}, "
+                f"found {sorted(observed_seeds)}"
+            )
+        binned[agent] = points
+    return binned
 
 
 def compute_cost(rows):
@@ -623,7 +678,7 @@ def write_report_section(rows, output_path, plots_dir):
         "",
         f"![Success rate]({plots_dir}/success_rate.png)",
         "",
-        "*Figure: Success rate over training for completed matched-budget runs. Success is defined by the configured LunarLander threshold of episode reward >= 200.*",
+        "*Figure: Training episode success rate for the matched 100k LunarLander-v3 runs, aggregated into 10,000-interaction windows across three seeds per model. Successful episodes were rare and isolated; all 15 final evaluations at 100k steps had zero success.*",
         "",
         "## Compute Diagnostics",
         "",
@@ -694,6 +749,7 @@ def generate_plots(rows, output_dir, rolling_window):
 
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        from matplotlib.ticker import PercentFormatter
     except ModuleNotFoundError as exc:
         raise SystemExit(
             "Missing dependency: matplotlib. Install it with `python -m pip install matplotlib`."
@@ -780,18 +836,38 @@ def generate_plots(rows, output_dir, rolling_window):
     plt.savefig(os.path.join(output_dir, "best_qrl_vs_classical_final_reward.png"), dpi=180)
     plt.close()
 
-    success_grouped = success_points(rows)
-    plt.figure(figsize=(11, 6))
-    for agent, points in sorted(success_grouped.items()):
-        if not points:
-            continue
-        xs, ys = zip(*points)
-        plt.plot(xs, ys, label=agent, linewidth=2)
+    success_grouped = binned_training_success(rows)
+    fig, ax = plt.subplots(figsize=(7.16, 4.45))
+    observed_rates = []
+    for agent in PLOT_AGENT_ORDER:
+        points = success_grouped[agent]
+        xs = [point["center"] + PLOT_AGENT_OFFSETS[agent] for point in points]
+        ys = [point["rate"] for point in points]
+        observed_rates.extend(rate for rate in ys if not math.isnan(rate))
+        ax.plot(
+            xs,
+            ys,
+            label=agent,
+            color=PLOT_AGENT_COLORS[agent],
+            linewidth=1.8,
+            marker="o",
+            markersize=4.5,
+        )
+    maximum_rate = max(observed_rates, default=0.0)
+    upper_limit = max(0.01, math.ceil(maximum_rate * 1.2 / 0.005) * 0.005)
+    ax.set_xlim(0, MAIN_COMPARISON_TIMESTEPS)
+    ax.set_ylim(0, upper_limit)
+    ax.set_xticks(
+        [bin_index * SUCCESS_BIN_SIZE + SUCCESS_BIN_SIZE / 2 for bin_index in range(10)],
+        [f"{5 + 10 * bin_index}k" for bin_index in range(10)],
+    )
+    ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=1))
     plt.xlabel("Environment interactions")
-    plt.ylabel("Success rate")
-    plt.ylim(-0.05, 1.05)
-    plt.title("LunarLander Success Rate")
-    plt.legend()
+    plt.ylabel("Training episode success rate")
+    plt.title("LunarLander Training Success Rate by 10k-Step Window")
+    plt.grid(axis="y", color="#dddddd", linewidth=0.8)
+    plt.gca().set_axisbelow(True)
+    plt.legend(frameon=False, ncols=2)
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "success_rate.png"), dpi=180)
     plt.close()

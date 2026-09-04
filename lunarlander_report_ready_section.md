@@ -20,7 +20,7 @@ The matched-budget comparison should be treated as the primary result because ev
 
 ![Success rate](lunarlander_comparison_plots/success_rate.png)
 
-*Figure: Success rate over training for completed matched-budget runs. Success is defined by the configured LunarLander threshold of episode reward >= 200.*
+*Figure: Training episode success rate for the matched 100k LunarLander-v3 runs, aggregated into 10,000-interaction windows across three seeds per model. Successful episodes were rare and isolated; all 15 final evaluations at 100k steps had zero success.*
 
 ## Compute Diagnostics
 
