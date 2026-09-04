@@ -1,0 +1,6 @@
+agent,category,runs,environment_steps_completed,wall_clock_time_seconds,qpu_execution_time_seconds,SPS,circuit_evaluations,final_reward,success_rate,status,notes
+PPO,Matched 100k classical,3,100000.0,23.171267986297607,,4318.666666666667,0,-233.73814454534661,0.0,complete matched-budget result,Included by matched 100k fairness checker and aggregate plotting rules.
+PPO-tiny,Matched 100k classical,3,100000.0,24.522040287653606,,4077.6666666666665,0,-1187.7764259769313,0.0,complete matched-budget result,Included by matched 100k fairness checker and aggregate plotting rules.
+DQN,Matched 100k classical,3,100000.0,33.684425354003906,,2968.3333333333335,0,-156.34463944086315,0.0,complete matched-budget result,Included by matched 100k fairness checker and aggregate plotting rules.
+Quantum DQN,Matched 100k quantum,3,100000.0,25599.0474152565,,3.0,358654043.0,-217.4841227789734,0.0,complete matched-budget result,Included by matched 100k fairness checker and aggregate plotting rules.
+QRL,Matched 100k quantum,3,100000.0,10113.832568009695,,9.333333333333334,1100000.0,-815.5171598263369,0.0,complete matched-budget result,Included by matched 100k fairness checker and aggregate plotting rules.
