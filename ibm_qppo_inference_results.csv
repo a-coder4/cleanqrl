@@ -1,2 +1,0 @@
-state_index,simulator_output,ibm_hardware_output,selected_action,selected_action_name,ibm_selected_action,ibm_selected_action_name,action_agreement,backend_name,shots,job_id,circuit_execution_time_sec
-0,"[0.1810, 0.0643, 0.1316, 0.1946]","[0.1400, 0.0200, 0.1000, 0.1400]",3,fire_right,0,noop,False,ibm_kingston,100,d92cam7qq29s738p30fg,9.421

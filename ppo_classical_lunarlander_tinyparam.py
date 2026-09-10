@@ -96,6 +96,11 @@ if __name__ == "__main__":
     parser.add_argument("--path", default=None, help="Optional explicit log directory.")
     parser.add_argument("--trial-name", default=None, help="Optional explicit trial name.")
     parser.add_argument(
+        "--config",
+        default=None,
+        help="Optional generated YAML configuration to load before CLI overrides.",
+    )
+    parser.add_argument(
         "--total-timesteps",
         type=int,
         default=None,
@@ -114,6 +119,9 @@ if __name__ == "__main__":
         help="Optional checkpoint interval override.",
     )
     args = parser.parse_args()
+    if args.config is not None:
+        with open(args.config, "r", encoding="utf-8") as config_file:
+            CONFIG.update(yaml.safe_load(config_file) or {})
     CONFIG["seed"] = args.seed
     if args.total_timesteps is not None:
         CONFIG["training_budget_timesteps"] = args.total_timesteps

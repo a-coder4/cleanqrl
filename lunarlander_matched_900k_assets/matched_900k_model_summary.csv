@@ -1,0 +1,5 @@
+agent,friendly_agent,seed_0_final_evaluation_reward,seed_1_final_evaluation_reward,seed_2_final_evaluation_reward,seed_count,mean_final_evaluation_reward,sample_std_final_evaluation_reward,t95_ci_lower,t95_ci_upper,final_evaluation_successes,final_evaluation_episodes,final_evaluation_success_percentage,wilson95_success_lower_percentage,wilson95_success_upper_percentage,trainable_parameters,status
+PPO,ppo,259.33089622618394,,,1,259.33089622618394,,,,10,10,100.0,72.24672001371107,99.99999999999999,9797,INCOMPLETE (1/3 seeds)
+QRL,qrl,,,,0,,,,,0,0,,,,5662,INCOMPLETE (0/3 seeds)
+PPO-tiny,ppo_tiny,65.31076727195388,,,1,65.31076727195388,,,,0,10,0.0,0.0,27.75327998628892,741,INCOMPLETE (1/3 seeds)
+DQN,dqn,-52.88902659738331,,,1,-52.88902659738331,,,,0,10,0.0,0.0,27.75327998628892,11584,INCOMPLETE (1/3 seeds)

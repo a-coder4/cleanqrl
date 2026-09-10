@@ -113,6 +113,9 @@ def eval_metrics(
         "episode_length": float(np.mean(lengths)),
         "success_rate": float(np.mean([reward >= threshold for reward in rewards])),
         "eval_episodes": len(rewards),
+        "evaluation_successes": int(sum(reward >= threshold for reward in rewards)),
+        "evaluation_episode_rewards": [float(reward) for reward in rewards],
+        "evaluation_episode_lengths": [int(length) for length in lengths],
     }
 
 
@@ -151,11 +154,14 @@ def evaluate_greedy_policy(
     device: torch.device,
     global_step: int,
     report_path,
-):
+    circuit_evaluations: int | None = None,
+    circuits_per_action: int = 0,
+) -> int:
     interval = int(config.get("eval_interval", 0) or 0)
     last_eval_step = int(config.get("_last_eval_step", 0) or 0)
     if interval <= 0 or global_step <= 0:
-        return
+        return 0
+    evaluation_circuit_evaluations = 0
     next_eval_step = ((last_eval_step // interval) + 1) * interval
     while global_step >= next_eval_step:
         env = make_env(config["env_id"], config)()
@@ -170,6 +176,7 @@ def evaluate_greedy_policy(
             while not done:
                 with torch.no_grad():
                     action = action_fn(torch.Tensor(np.asarray(obs)[None, ...]).to(device))
+                evaluation_circuit_evaluations += int(circuits_per_action)
                 obs, reward, terminated, truncated, _ = env.step(int(action[0]))
                 done = terminated or truncated
                 total_reward += float(reward)
@@ -177,10 +184,12 @@ def evaluate_greedy_policy(
             rewards.append(total_reward)
             lengths.append(length)
         env.close()
-        log_metrics(
-            config,
-            eval_metrics(config, next_eval_step, rewards, lengths),
-            report_path,
-        )
+        metrics = eval_metrics(config, next_eval_step, rewards, lengths)
+        if circuit_evaluations is not None:
+            metrics["circuit_evaluations"] = int(
+                circuit_evaluations + evaluation_circuit_evaluations
+            )
+        log_metrics(config, metrics, report_path)
         config["_last_eval_step"] = int(next_eval_step)
         next_eval_step += interval
+    return evaluation_circuit_evaluations

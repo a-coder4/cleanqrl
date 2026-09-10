@@ -400,7 +400,7 @@ def ppo_quantum_hybrid(config):
             circuit_evaluations=circuit_evaluations,
         )
         log_metrics(config, metrics, report_path)
-        evaluate_greedy_policy(
+        circuit_evaluations += evaluate_greedy_policy(
             config,
             lambda eval_obs: torch.argmax(
                 agent.quantum_layer(agent.network(eval_obs) * np.pi)
@@ -412,6 +412,8 @@ def ppo_quantum_hybrid(config):
             device,
             global_step,
             report_path,
+            circuit_evaluations=circuit_evaluations,
+            circuits_per_action=1,
         )
         maybe_save_checkpoint(config, agent, report_path, name, global_step)
 

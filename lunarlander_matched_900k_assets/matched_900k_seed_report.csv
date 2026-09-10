@@ -1,0 +1,13 @@
+agent,friendly_agent,agent_key,seed,status,run_name,run_path,total_timesteps,trainable_parameters,final_evaluation_reward,final_evaluation_successes,final_evaluation_episodes,final_evaluation_success_rate,training_last_100_mean,training_last_100_std,training_max_reward,wall_clock_seconds,wall_clock_hours,SPS,circuit_evaluations
+PPO,ppo,PPO_classical,0,PASS,2026-07-10--14-57-31_ppo_lunarlander_stable_B_900k_seed0,C:\Users\Aadesh\cleanqrl\logs\2026-07-10--14-57-31_ppo_lunarlander_stable_B_900k_seed0,900000,9797,259.33089622618394,10,10,1.0,239.87300846294275,57.94903848864044,313.80764862122885,166.84604334831238,0.046346123152308995,5394.0,
+PPO,ppo,PPO_classical,1,MISSING,,,,9797,,,,,,,,,,,
+PPO,ppo,PPO_classical,2,MISSING,,,,9797,,,,,,,,,,,
+QRL,qrl,ppo_quantum_hybrid,0,MISSING,,,,5662,,,,,,,,,,,
+QRL,qrl,ppo_quantum_hybrid,1,MISSING,,,,5662,,,,,,,,,,,
+QRL,qrl,ppo_quantum_hybrid,2,MISSING,,,,5662,,,,,,,,,,,
+PPO-tiny,ppo_tiny,PPO_tiny_classical,0,PASS,2026-07-10--15-00-19_ppo_tiny_classical_900k_seed0,C:\Users\Aadesh\cleanqrl\logs\2026-07-10--15-00-19_ppo_tiny_classical_900k_seed0,900000,741,65.31076727195388,0,10,0.0,86.93298749240297,110.22155768278195,242.07365343602876,237.79150199890137,0.06605319499969482,3784.0,
+PPO-tiny,ppo_tiny,PPO_tiny_classical,1,MISSING,,,,741,,,,,,,,,,,
+PPO-tiny,ppo_tiny,PPO_tiny_classical,2,MISSING,,,,741,,,,,,,,,,,
+DQN,dqn,DQN_classical,0,PASS,2026-07-10--15-04-22_dqn_lunarlander_classical_900k_seed0,C:\Users\Aadesh\cleanqrl\logs\2026-07-10--15-04-22_dqn_lunarlander_classical_900k_seed0,900000,11584,-52.88902659738331,0,10,0.0,-5.170876509312661,67.35563460118885,202.4423104480622,334.5634446144104,0.09293429017066955,2690.0,
+DQN,dqn,DQN_classical,1,MISSING,,,,11584,,,,,,,,,,,
+DQN,dqn,DQN_classical,2,MISSING,,,,11584,,,,,,,,,,,

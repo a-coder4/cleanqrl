@@ -1,0 +1,5 @@
+agent,friendly_agent,total_trainable_parameters,classical_encoder_parameters,quantum_circuit_parameters,scaling_output_parameters,actor_policy_parameters,critic_value_parameters,q_network_parameters,policy_classical_macs,value_classical_macs,classical_flops_convention,qubits,variational_layers,source_class,policy_classical_flops,value_classical_flops
+PPO,ppo,9797,0,0,0,4996,4801,0,4864,4672,2 FLOPs per linear-layer weight (multiply + add); biases and activations excluded,,,cleanqrl.ppo_classical.PPOAgentClassical,9728,9344
+QRL,qrl,5662,836,24,1,861,4801,0,768,4672,2 FLOPs per linear-layer weight (multiply + add); biases and activations excluded,4,2,cleanqrl.ppo_quantum_hybrid.Agent,1536,9344
+PPO-tiny,ppo_tiny,741,0,0,0,420,321,0,384,288,2 FLOPs per linear-layer weight (multiply + add); biases and activations excluded,,,ppo_classical_lunarlander_tinyparam.TinyClassicalAgent,768,576
+DQN,dqn,11584,0,0,0,0,0,11584,11376,0,2 FLOPs per linear-layer weight (multiply + add); biases and activations excluded,,,cleanqrl.dqn_classical.DQNAgentClassical,22752,0
