@@ -2,3 +2,5 @@ cluster/
 logs/
 **/tests/
 **/__pycache__/
+.venv/
+.DS_Store
